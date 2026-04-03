@@ -6,6 +6,7 @@ local M = {}
 ---@type acp.BufferState
 local state = {
     bufnr = nil,
+    mutating = {},
 }
 
 ---@return integer?
@@ -33,6 +34,20 @@ local function configure(bufnr)
     vim.api.nvim_set_option_value('filetype', config.get().filetype, {
         buf = bufnr,
     })
+    vim.api.nvim_set_option_value('omnifunc', "v:lua.require'acp.completion'.complete", {
+        buf = bufnr,
+    })
+    vim.api.nvim_set_option_value('modifiable', false, {
+        buf = bufnr,
+    })
+end
+
+local function attach_prompt_guard(bufnr)
+    local ok, edit = pcall(require, 'acp.edit')
+
+    if ok and type(edit.attach) == 'function' then
+        edit.attach(bufnr)
+    end
 end
 
 ---Return the ACP chat buffer when it exists and is valid.
@@ -52,6 +67,7 @@ function M.ensure()
     local bufnr = M.get()
 
     if bufnr ~= nil then
+        attach_prompt_guard(bufnr)
         return bufnr
     end
 
@@ -59,6 +75,7 @@ function M.ensure()
     state.bufnr = bufnr
     vim.api.nvim_buf_set_name(bufnr, config.get().chat_buffer_name)
     configure(bufnr)
+    attach_prompt_guard(bufnr)
 
     return bufnr
 end
@@ -84,6 +101,36 @@ function M.clear()
             force = true,
         })
     end
+end
+
+---@param bufnr integer
+---@param callback fun()
+function M.with_mutation(bufnr, callback)
+    state.mutating[bufnr] = (state.mutating[bufnr] or 0) + 1
+    local was_modifiable = vim.bo[bufnr].modifiable
+
+    if not was_modifiable then
+        vim.bo[bufnr].modifiable = true
+    end
+
+    local ok, err = pcall(callback)
+
+    vim.bo[bufnr].modifiable = was_modifiable
+    state.mutating[bufnr] = state.mutating[bufnr] - 1
+
+    if state.mutating[bufnr] <= 0 then
+        state.mutating[bufnr] = nil
+    end
+
+    if not ok then
+        error(err, 0)
+    end
+end
+
+---@param bufnr integer
+---@return boolean
+function M.is_mutating(bufnr)
+    return (state.mutating[bufnr] or 0) > 0
 end
 
 return M

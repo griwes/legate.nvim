@@ -251,6 +251,24 @@ local function selected_permission_outcome(selected_option)
     }
 end
 
+---@param permission acp.PermissionRequest
+---@param on_choice fun(selected_option?: acp.PermissionOption)
+local function pick_permission_option(permission, on_choice)
+    local function open_picker()
+        vim.ui.select(permission.options, {
+            prompt = permission_prompt(permission),
+            format_item = format_permission_option,
+        }, on_choice)
+    end
+
+    if vim.in_fast_event() then
+        vim.schedule(open_picker)
+        return
+    end
+
+    open_picker()
+end
+
 ---@param generation integer
 ---@param permission acp.PermissionRequest
 ---@param respond fun(result?: any, error?: table)
@@ -272,10 +290,10 @@ local function handle_permission_request(generation, permission, respond)
         return
     end
 
-    vim.ui.select(permission.options, {
-        prompt = permission_prompt(permission),
-        format_item = format_permission_option,
-    }, function(selected_option)
+    session.wait_for_approval(current_session, permission)
+    rerender(current_session)
+
+    pick_permission_option(permission, function(selected_option)
         if not is_live_generation(generation) then
             return
         end

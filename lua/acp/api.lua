@@ -2,6 +2,7 @@ local buffer = require('acp.buffer')
 local config_option = require('acp.config_option')
 local config = require('acp.config')
 local input = require('acp.input')
+local picker = require('acp.picker')
 local persistence = require('acp.persistence')
 local render = require('acp.render')
 local session = require('acp.session')
@@ -93,6 +94,54 @@ local function slash_command_line(command)
     end
 
     return line
+end
+
+---@param options acp.SessionConfigOption[]
+---@return fun(option: acp.SessionConfigOption): string
+local function config_option_picker_formatter(options)
+    return picker.make_formatter(options, function(option)
+        return {
+            option.name,
+            string.format('current=%s', option.currentValue),
+            string.format('id=%s', option.id),
+            option.description or '',
+        }
+    end)
+end
+
+---@param choices acp.ConfigOptionValueChoice[]
+---@param current_value string
+---@return fun(choice: acp.ConfigOptionValueChoice): string
+local function config_option_value_picker_formatter(choices, current_value)
+    return picker.make_formatter(choices, function(choice)
+        local marker = choice.value.value == current_value and '*' or ' '
+        local group = choice.group_name and string.format('[%s]', choice.group_name) or ''
+
+        return {
+            string.format('%s %s', marker, choice.value.name),
+            string.format('value=%s', choice.value.value),
+            group,
+            choice.value.description or '',
+        }
+    end)
+end
+
+---@param commands acp.AvailableCommand[]
+---@return fun(command: acp.AvailableCommand): string
+local function slash_command_picker_formatter(commands)
+    return picker.make_formatter(commands, function(command)
+        local input_hint = ''
+
+        if type(command.input) == 'table' and command.input.hint ~= nil and command.input.hint ~= '' then
+            input_hint = string.format('input=%s', command.input.hint)
+        end
+
+        return {
+            string.format('/%s', command.name),
+            command.description,
+            input_hint,
+        }
+    end)
 end
 
 ---@param sessions acp.Session[]
@@ -371,6 +420,12 @@ function M.open_chat()
         0,
     })
 
+    local ok, edit = pcall(require, 'acp.edit')
+
+    if ok and type(edit.refresh) == 'function' then
+        edit.refresh(bufnr)
+    end
+
     return bufnr
 end
 
@@ -551,34 +606,39 @@ function M.pick_config_option(session_id)
         return
     end
 
-    vim.ui.select(current_session.config_options, {
-        prompt = 'Select ACP config option',
-        format_item = config_option_line,
-    }, function(selected_option)
-        if selected_option == nil then
-            return
-        end
+    local format_option = config_option_picker_formatter(current_session.config_options)
 
-        local values = config_option.choices(selected_option)
-
-        if #values == 0 then
-            vim.notify(string.format('ACP config option has no selectable values: %s', selected_option.id))
-            return
-        end
-
-        vim.ui.select(values, {
-            prompt = string.format('Select value for ACP config option: %s', selected_option.name),
-            format_item = function(choice)
-                return config_option_value_line(choice, selected_option.currentValue)
-            end,
-        }, function(selected_choice)
-            if selected_choice == nil then
+    local function pick_option()
+        vim.ui.select(current_session.config_options, {
+            prompt = 'Select ACP config option',
+            format_item = format_option,
+        }, function(selected_option)
+            if selected_option == nil then
                 return
             end
 
-            M.set_config_option(selected_option.id, selected_choice.value.value, current_session.id)
+            local values = config_option.choices(selected_option)
+
+            if #values == 0 then
+                vim.notify(string.format('ACP config option has no selectable values: %s', selected_option.id))
+                return
+            end
+
+            vim.ui.select(values, {
+                prompt = string.format('Select value for ACP config option: %s', selected_option.name),
+                format_item = config_option_value_picker_formatter(values, selected_option.currentValue),
+            }, function(selected_choice)
+                if selected_choice == nil then
+                    pick_option()
+                    return
+                end
+
+                M.set_config_option(selected_option.id, selected_choice.value.value, current_session.id)
+            end)
         end)
-    end)
+    end
+
+    pick_option()
 end
 
 ---Open a picker for ACP slash commands and submit the selected command prompt.
@@ -592,37 +652,44 @@ function M.pick_slash_command(session_id)
         return
     end
 
-    vim.ui.select(current_session.available_commands, {
-        prompt = 'Select ACP slash command',
-        format_item = slash_command_line,
-    }, function(selected_command)
-        if selected_command == nil then
-            return
-        end
+    local format_command = slash_command_picker_formatter(current_session.available_commands)
 
-        if type(selected_command.input) ~= 'table' then
-            M.run_slash_command(selected_command.name, nil, current_session.id)
-            return
-        end
-
-        vim.ui.input({
-            prompt = string.format('Input for ACP slash command /%s', selected_command.name),
-            default = '',
-        }, function(provided_input)
-            if provided_input == nil then
+    local function pick_command()
+        vim.ui.select(current_session.available_commands, {
+            prompt = 'Select ACP slash command',
+            format_item = format_command,
+        }, function(selected_command)
+            if selected_command == nil then
                 return
             end
 
-            local trimmed_input = vim.trim(provided_input)
-
-            if trimmed_input == '' then
-                vim.notify(string.format('ACP slash command requires input: /%s', selected_command.name))
+            if type(selected_command.input) ~= 'table' then
+                M.run_slash_command(selected_command.name, nil, current_session.id)
                 return
             end
 
-            M.run_slash_command(selected_command.name, trimmed_input, current_session.id)
+            vim.ui.input({
+                prompt = string.format('Input for ACP slash command /%s', selected_command.name),
+                default = '',
+            }, function(provided_input)
+                if provided_input == nil then
+                    pick_command()
+                    return
+                end
+
+                local trimmed_input = vim.trim(provided_input)
+
+                if trimmed_input == '' then
+                    vim.notify(string.format('ACP slash command requires input: /%s', selected_command.name))
+                    return
+                end
+
+                M.run_slash_command(selected_command.name, trimmed_input, current_session.id)
+            end)
         end)
-    end)
+    end
+
+    pick_command()
 end
 
 ---Open a picker for local ACP sessions and select the chosen session.
@@ -694,7 +761,6 @@ function M.pick_approval(session_id)
         if selected_approval == nil then
             return
         end
-
         M.reveal_approval(selected_approval.ordinal, current_session.id)
     end)
 end

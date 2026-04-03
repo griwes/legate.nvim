@@ -1,6 +1,7 @@
 ---@class acp.CommandModule
 local M = {}
 local initialized = false
+local config_option = require('acp.config_option')
 
 ---@return acp.Api
 local function api()
@@ -44,6 +45,33 @@ local function approval_ordinals()
     return vim.tbl_map(function(approval)
         return tostring(approval.ordinal)
     end, approvals)
+end
+
+---@param session_id? string
+---@return string[]
+local function config_option_ids(session_id)
+    local ids = {}
+
+    for _, option in ipairs(api().config_options(session_id)) do
+        table.insert(ids, option.id)
+    end
+
+    return ids
+end
+
+---@param cmdline string
+---@return string[]
+local function command_args(cmdline)
+    local stripped = cmdline:gsub('^:?%S+%s*', '', 1)
+    local args = vim.split(vim.trim(stripped), '%s+', {
+        trimempty = true,
+    })
+
+    if cmdline:sub(-1):match('%s') then
+        table.insert(args, '')
+    end
+
+    return args
 end
 
 ---@return string[]
@@ -231,6 +259,45 @@ function M.ensure()
     end, {
         desc = 'Set an ACP session config option',
         nargs = '+',
+        complete = function(arglead, cmdline)
+            local current_session = api().current_session()
+
+            if current_session == nil then
+                return {}
+            end
+
+            local args = command_args(cmdline)
+
+            if #args <= 1 then
+                return vim.tbl_filter(function(option_id)
+                    return vim.startswith(option_id, arglead)
+                end, config_option_ids(current_session.id))
+            end
+
+            local option_id = args[1]
+            local option = nil
+
+            for _, current_option in ipairs(api().config_options(current_session.id)) do
+                if current_option.id == option_id then
+                    option = current_option
+                    break
+                end
+            end
+
+            if option == nil then
+                return {}
+            end
+
+            local values = {}
+
+            for _, choice in ipairs(config_option.choices(option)) do
+                if vim.startswith(choice.value.value, arglead) then
+                    table.insert(values, choice.value.value)
+                end
+            end
+
+            return values
+        end,
     })
 
     create('ACPPickConfigOption', function()

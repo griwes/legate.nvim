@@ -6,10 +6,23 @@ local sessions = {}
 local current_id = nil
 local next_ordinal = 1
 local next_message_id = 1
+local reconcile_status_messages
 
 ---@return integer
 local function now()
     return os.time()
+end
+
+---@param tool_call acp.ToolCallState
+---@return string
+local function tool_stream_key(tool_call)
+    return tool_call.stream_key
+end
+
+---@param ordinal integer
+---@return string
+local function approval_stream_key(ordinal)
+    return string.format('approval:%d', ordinal)
 end
 
 ---@return acp.Session
@@ -90,6 +103,108 @@ local function normalize_command_input(input)
     end
 
     return vim.deepcopy(input)
+end
+
+---@param location acp.ToolCallLocation
+---@return string
+local function format_location(location)
+    if location.line ~= nil then
+        return string.format('`%s:%d`', location.path, location.line)
+    end
+
+    return string.format('`%s`', location.path)
+end
+
+---@param content acp.ToolCallContent
+---@return string?
+local function summarize_tool_content(content)
+    if content.type == 'content' and content.content ~= nil then
+        if content.content.type == 'text' and content.content.text ~= nil then
+            local summary = content.content.text:gsub('%s+', ' ')
+            return string.format('Text: %s', summary:sub(1, 120))
+        end
+
+        return string.format('Content: `%s`', content.content.type or 'unknown')
+    end
+
+    if content.type == 'diff' then
+        return string.format('Diff: `%s`', content.path)
+    end
+
+    if content.type == 'terminal' then
+        return string.format('Terminal: `%s`', content.terminalId)
+    end
+
+    return nil
+end
+
+---@param tool_call acp.ToolCallState
+---@return string
+local function tool_call_status_text(tool_call)
+    local lines = {
+        string.format('Status: `%s`', tool_call.status),
+    }
+
+    if tool_call.kind ~= nil then
+        table.insert(lines, string.format('Kind: `%s`', tool_call.kind))
+    end
+
+    if #tool_call.locations > 0 then
+        local locations = {}
+
+        for _, location in ipairs(tool_call.locations) do
+            table.insert(locations, format_location(location))
+        end
+
+        table.insert(lines, string.format('Locations: %s', table.concat(locations, ', ')))
+    end
+
+    for _, content in ipairs(tool_call.content) do
+        local summary = summarize_tool_content(content)
+
+        if summary ~= nil then
+            table.insert(lines, summary)
+        end
+    end
+
+    return table.concat(lines, '\n')
+end
+
+---@param approval acp.ApprovalEntry
+---@return string
+local function approval_status_text(approval)
+    local lines = {
+        string.format('Outcome: `%s`', approval.outcome),
+        string.format('Source: `%s`', approval.source),
+    }
+
+    if
+        approval.selected_option_name ~= nil
+        and approval.selected_kind ~= nil
+        and approval.selected_option_id ~= nil
+    then
+        table.insert(
+            lines,
+            string.format(
+                'Selected Option: %s [%s] (`%s`)',
+                approval.selected_option_name,
+                approval.selected_kind,
+                approval.selected_option_id
+            )
+        )
+    end
+
+    if #approval.options > 0 then
+        local option_lines = {}
+
+        for _, option in ipairs(approval.options) do
+            table.insert(option_lines, string.format('%s [%s] (`%s`)', option.name, option.kind, option.optionId))
+        end
+
+        table.insert(lines, string.format('Options: %s', table.concat(option_lines, ', ')))
+    end
+
+    return table.concat(lines, '\n')
 end
 
 ---@param available_commands any
@@ -320,13 +435,18 @@ end
 ---@param session acp.Session
 ---@param role acp.MessageRole
 ---@param text string
+---@param opts? { stream_kind?: 'tool_call'|'approval', stream_key?: string, status_state?: string, status_title?: string }
 ---@return acp.Message
-function M.append_message(session, role, text)
+function M.append_message(session, role, text, opts)
     local message = {
         id = next_message_id,
         role = role,
         text = text,
         created_at = now(),
+        stream_kind = opts and opts.stream_kind or nil,
+        stream_key = opts and opts.stream_key or nil,
+        status_state = opts and opts.status_state or nil,
+        status_title = opts and opts.status_title or nil,
     }
 
     next_message_id = next_message_id + 1
@@ -354,6 +474,44 @@ function M.append_chunk(current_session, role, text)
     end
 
     return M.append_message(current_session, role, text)
+end
+
+---@param current_session acp.Session
+---@param stream_kind 'tool_call'|'approval'
+---@param stream_key string
+---@return acp.Message?
+local function status_message(current_session, stream_kind, stream_key)
+    for _, message in ipairs(current_session.messages) do
+        if message.role == 'status' and message.stream_kind == stream_kind and message.stream_key == stream_key then
+            return message
+        end
+    end
+
+    return nil
+end
+
+---@param current_session acp.Session
+---@param stream_kind 'tool_call'|'approval'
+---@param stream_key string
+---@param text string
+---@param opts { status_state?: string, status_title?: string }
+local function upsert_status_message(current_session, stream_kind, stream_key, text, opts)
+    local message = status_message(current_session, stream_kind, stream_key)
+
+    if message ~= nil then
+        message.text = text
+        message.status_state = opts.status_state
+        message.status_title = opts.status_title
+        current_session.updated_at = now()
+        return message
+    end
+
+    return M.append_message(current_session, 'status', text, {
+        stream_kind = stream_kind,
+        stream_key = stream_key,
+        status_state = opts.status_state,
+        status_title = opts.status_title,
+    })
 end
 
 ---Store the unsent draft prompt for a session.
@@ -480,6 +638,7 @@ function M.add_tool_call(current_session, tool_call)
 
     local next_tool_call = {
         tool_call_id = tool_call.toolCallId,
+        stream_key = string.format('tool:%d:%s', current_session.turn_id, tool_call.toolCallId),
         title = tool_call.title,
         status = tool_call.status or 'pending',
         kind = tool_call.kind,
@@ -491,6 +650,16 @@ function M.add_tool_call(current_session, tool_call)
 
     table.insert(current_session.tool_calls, next_tool_call)
     current_session.updated_at = now()
+    upsert_status_message(
+        current_session,
+        'tool_call',
+        tool_stream_key(next_tool_call),
+        tool_call_status_text(next_tool_call),
+        {
+            status_state = next_tool_call.status,
+            status_title = next_tool_call.title,
+        }
+    )
 
     return next_tool_call
 end
@@ -504,6 +673,7 @@ function M.update_tool_call(current_session, tool_call_update)
     if tool_call == nil then
         tool_call = {
             tool_call_id = tool_call_update.toolCallId,
+            stream_key = string.format('tool:%d:%s', current_session.turn_id, tool_call_update.toolCallId),
             title = tool_call_update.title or tool_call_update.toolCallId,
             status = tool_call_update.status or 'pending',
             locations = {},
@@ -541,6 +711,10 @@ function M.update_tool_call(current_session, tool_call_update)
     end
 
     current_session.updated_at = now()
+    upsert_status_message(current_session, 'tool_call', tool_stream_key(tool_call), tool_call_status_text(tool_call), {
+        status_state = tool_call.status,
+        status_title = tool_call.title,
+    })
 
     return tool_call
 end
@@ -576,8 +750,9 @@ function M.record_approval(current_session, permission, outcome, source)
         end
     end
 
-    table.insert(current_session.approval_entries, {
+    local approval = {
         ordinal = #current_session.approval_entries + 1,
+        stream_key = approval_stream_key(#current_session.approval_entries + 1),
         tool_call_id = permission.toolCall.toolCallId,
         title = permission.toolCall.title
             or (matched_tool_call and matched_tool_call.title)
@@ -589,8 +764,30 @@ function M.record_approval(current_session, permission, outcome, source)
         selected_option_name = selected_option_name,
         selected_option_id = outcome.optionId,
         options = vim.deepcopy(permission.options),
+    }
+
+    table.insert(current_session.approval_entries, approval)
+    upsert_status_message(current_session, 'approval', approval.stream_key, approval_status_text(approval), {
+        status_state = approval.selected_kind or approval.outcome,
+        status_title = string.format('Approval [%d] %s', approval.ordinal, approval.title),
     })
     current_session.updated_at = now()
+end
+
+---@param current_session acp.Session
+---@param permission acp.PermissionRequest
+function M.wait_for_approval(current_session, permission)
+    local tool_call_id = permission.toolCall.toolCallId
+
+    if tool_call_id == nil then
+        return
+    end
+
+    M.update_tool_call(current_session, {
+        toolCallId = tool_call_id,
+        title = permission.toolCall.title,
+        status = 'waiting_for_approval',
+    })
 end
 
 ---@param current_session acp.Session
@@ -645,6 +842,16 @@ function M.cancel(current_session)
     for _, tool_call in ipairs(current_session.tool_calls) do
         if not is_finished_tool_status(tool_call.status) then
             tool_call.status = 'cancelled'
+            upsert_status_message(
+                current_session,
+                'tool_call',
+                tool_stream_key(tool_call),
+                tool_call_status_text(tool_call),
+                {
+                    status_state = tool_call.status,
+                    status_title = tool_call.title,
+                }
+            )
         end
     end
 
@@ -654,6 +861,36 @@ function M.cancel(current_session)
     current_session.updated_at = now()
 
     return current_session
+end
+
+reconcile_status_messages = function(current_session)
+    for _, tool_call in ipairs(current_session.tool_calls) do
+        if tool_call.stream_key == nil or tool_call.stream_key == '' then
+            tool_call.stream_key = string.format('tool:%d:%s', current_session.turn_id, tool_call.tool_call_id)
+        end
+
+        upsert_status_message(
+            current_session,
+            'tool_call',
+            tool_stream_key(tool_call),
+            tool_call_status_text(tool_call),
+            {
+                status_state = tool_call.status,
+                status_title = tool_call.title,
+            }
+        )
+    end
+
+    for _, approval in ipairs(current_session.approval_entries) do
+        if approval.stream_key == nil or approval.stream_key == '' then
+            approval.stream_key = approval_stream_key(approval.ordinal)
+        end
+
+        upsert_status_message(current_session, 'approval', approval.stream_key, approval_status_text(approval), {
+            status_state = approval.selected_kind or approval.outcome,
+            status_title = string.format('Approval [%d] %s', approval.ordinal, approval.title),
+        })
+    end
 end
 
 ---Clear all in-memory ACP session state.
@@ -696,6 +933,7 @@ function M.restore(payload)
 
             if restored ~= nil then
                 sessions[restored.id] = restored
+                reconcile_status_messages(restored)
                 max_ordinal = math.max(max_ordinal, restored.ordinal)
 
                 for _, message in ipairs(restored.messages) do

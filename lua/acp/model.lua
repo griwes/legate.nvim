@@ -42,6 +42,7 @@
 ---@alias acp.ToolCallStatus
 ---| 'pending'
 ---| 'in_progress'
+---| 'waiting_for_approval'
 ---| 'completed'
 ---| 'failed'
 ---| 'cancelled'
@@ -63,6 +64,10 @@
 ---@field role acp.MessageRole
 ---@field text string
 ---@field created_at integer
+---@field stream_kind? 'tool_call'|'approval'
+---@field stream_key? string
+---@field status_state? string
+---@field status_title? string
 
 ---@class acp.Session
 ---@field id string
@@ -219,6 +224,7 @@
 
 ---@class acp.ToolCallState
 ---@field tool_call_id string
+---@field stream_key string
 ---@field title string
 ---@field status acp.ToolCallStatus
 ---@field kind? acp.ToolKind
@@ -229,6 +235,7 @@
 
 ---@class acp.ApprovalEntry
 ---@field ordinal integer
+---@field stream_key string
 ---@field tool_call_id string?
 ---@field title string
 ---@field outcome 'selected'|'cancelled'
