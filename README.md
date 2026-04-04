@@ -32,6 +32,7 @@ Example local `lazy.nvim` spec:
 - `:ACPConfigOptions` lists ACP session config options for the current local session
 - `:ACPSlashCommands` lists ACP slash commands for the current local session
 - `:ACPRevealApproval <ordinal>` opens or reuses the shared chat buffer and jumps to a recorded approval entry
+- `:ACPSelectApprovalOption <option-id>` resolves the current inline ACP approval by option id
 - `:ACPPickApproval` reveals a recorded approval through `vim.ui.select`
 - `:ACPSelectSession <id>` switches the shared chat buffer to a local ACP session
 - `:ACPPickSession` switches the shared chat buffer through `vim.ui.select`
@@ -62,7 +63,7 @@ Example local `lazy.nvim` spec:
 - ACP now stores slash commands from official `available_commands_update` notifications, renders them inline in the Markdown chat buffer, and exposes list/run/picker UX that submits normal `/command ...` prompt text
 - ACP now defers chat-buffer rerenders out of fast event contexts so live transport notifications do not hit `E5560` under real agent traffic
 - tool calls now render in a dedicated Markdown tools section instead of collapsing into transcript status noise
-- permission requests now support either configured default outcomes or interactive `vim.ui.select` approval selection, and both paths leave visible approval history in the Markdown chat buffer
+- permission requests now support either configured default outcomes or an inline approval surface that stays visible in the shared chat buffer until it is explicitly resolved
 - approval history now records decision source plus per-option metadata, and approvals can be reviewed or revisited through commands/picker UX without leaving the shared Markdown chat buffer
 - ACP now advertises `fs/read_text_file` and `fs/write_text_file`, reads from unsaved open buffers when possible, and writes through open buffers so Neovim state and disk stay aligned
 - ACP now advertises `terminal = true` and handles `terminal/create`, `terminal/output`, `terminal/wait_for_exit`, `terminal/kill`, and `terminal/release` through either a native hidden-process backend or an optional `terminal-manager.nvim` adapter
@@ -112,13 +113,15 @@ require('acp').setup({
 })
 ```
 
-Interactive approval behavior uses `vim.ui.select` for ACP permission requests:
+Interactive approval behavior renders an inline approval surface inside the ACP chat buffer:
 
 ```lua
 require('acp').setup({
     permission_strategy = 'select',
 })
 ```
+
+When an approval is pending, ACP keeps it visible above the prompt section until it is explicitly resolved or the underlying request becomes stale. Resolve it through the inline affordance or `:ACPSelectApprovalOption <option-id>`.
 
 ## Session Persistence
 

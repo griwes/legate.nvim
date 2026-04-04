@@ -1,6 +1,7 @@
 local api = require('acp.api')
 local commands = require('acp.commands')
 local config = require('acp.config')
+local surface = require('acp.surface')
 
 ---@class acp.RootModule
 ---@field config acp.Config
@@ -20,16 +21,22 @@ local function configure_autocmds()
         group = augroup,
     })
 
-    if not config.get().persist_sessions then
-        return
-    end
-
-    vim.api.nvim_create_autocmd('VimLeavePre', {
+    vim.api.nvim_create_autocmd('ColorScheme', {
         group = augroup,
         callback = function()
-            pcall(api.save_sessions)
+            surface.invalidate_highlights()
+            surface.refresh_highlights()
         end,
     })
+
+    if config.get().persist_sessions then
+        vim.api.nvim_create_autocmd('VimLeavePre', {
+            group = augroup,
+            callback = function()
+                pcall(api.save_sessions)
+            end,
+        })
+    end
 end
 
 ---Configure ACP.
@@ -38,6 +45,7 @@ end
 function M.setup(opts)
     M.config = config.set(opts)
     configure_autocmds()
+    surface.refresh_highlights()
 
     if M.config.restore_sessions_on_setup then
         api.restore_sessions({

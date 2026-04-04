@@ -69,7 +69,7 @@ end
 ---@param bufnr integer
 ---@return integer
 function M.prompt_start_line(bufnr)
-    return M.prompt_header_line(bufnr) + 1
+    return M.prompt_header_line(bufnr) + 2
 end
 
 ---Return the 1-based last editable prompt line.
@@ -99,7 +99,7 @@ function M.capture_prompt(bufnr)
         return nil
     end
 
-    local lines = vim.api.nvim_buf_get_lines(bufnr, anchor.row + 1, -1, false)
+    local lines = vim.api.nvim_buf_get_lines(bufnr, anchor.row + 2, -1, false)
 
     return vim.trim(table.concat(lines, '\n'))
 end
@@ -131,7 +131,7 @@ function M.set_prompt(bufnr, text)
     end
 
     require('acp.buffer').with_mutation(bufnr, function()
-        vim.api.nvim_buf_set_lines(bufnr, anchor.row + 1, -1, false, replacement)
+        vim.api.nvim_buf_set_lines(bufnr, anchor.row + 2, -1, false, replacement)
     end)
 end
 

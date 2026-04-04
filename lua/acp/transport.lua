@@ -32,6 +32,7 @@ end
 ---@field loading_existing_session boolean
 ---@field creating_new_session boolean
 ---@field pending_session_updates table<string, table[]>
+---@field pending_permission? acp.PendingPermissionState
 local state = {
     initialized = false,
     authenticated = false,
@@ -46,7 +47,14 @@ local state = {
     loading_existing_session = false,
     creating_new_session = false,
     pending_session_updates = {},
+    pending_permission = nil,
 }
+
+---@class acp.PendingPermissionState
+---@field generation integer
+---@field local_session_id string
+---@field permission acp.PermissionRequest
+---@field respond fun(result?: any, error?: table)
 
 ---@param current_session acp.Session
 ---@return boolean
@@ -97,18 +105,32 @@ end
 ---@param params { sessionId?: string }
 ---@return acp.Session?
 local function active_request_session(params)
-    local current_session = state.active_session
-
-    if
-        current_session == nil
-        or current_session.remote_id ~= params.sessionId
-        or state.loading_existing_session
-        or current_session.status ~= 'waiting'
-    then
+    if state.loading_existing_session then
         return nil
     end
 
-    return current_session
+    local session_id = params.sessionId
+    local current_session = state.active_session
+
+    if
+        current_session ~= nil
+        and current_session.status == 'waiting'
+        and (session_id == nil or current_session.remote_id == session_id)
+    then
+        return current_session
+    end
+
+    local waiting_session = session.waiting()
+
+    if
+        waiting_session ~= nil
+        and waiting_session.status == 'waiting'
+        and (session_id == nil or waiting_session.remote_id == session_id)
+    then
+        return waiting_session
+    end
+
+    return nil
 end
 
 local function reset_connection()
@@ -130,6 +152,7 @@ local function reset_connection()
     state.loading_existing_session = false
     state.creating_new_session = false
     state.pending_session_updates = {}
+    state.pending_permission = nil
 end
 
 ---@return string
@@ -166,6 +189,39 @@ local function rerender(current_session)
     perform_rerender(current_session)
 end
 
+---@param current_session acp.Session
+local function reveal_inline_approval(current_session)
+    if vim.in_fast_event() then
+        vim.schedule(function()
+            reveal_inline_approval(current_session)
+        end)
+        return
+    end
+
+    local bufnr = buffer.get()
+
+    if bufnr == nil then
+        vim.notify(string.format('ACP approval pending in %s', current_session.id))
+        return
+    end
+
+    local selected_session = session.current()
+
+    if selected_session ~= nil and selected_session.id ~= current_session.id then
+        local prompt = input.capture_prompt(bufnr)
+
+        if prompt ~= nil then
+            session.set_draft_prompt(selected_session, prompt)
+        end
+
+        session.select(current_session.id)
+        render.render(current_session, current_session.draft_prompt or '')
+        return
+    end
+
+    rerender(current_session)
+end
+
 ---@param raw_path string?
 ---@return string
 local function resolve_cwd(raw_path)
@@ -191,7 +247,7 @@ end
 ---@param option_kind acp.PermissionOptionKind
 ---@param options acp.PermissionOption[]
 ---@return acp.PermissionOption?
-local function pick_permission_option(option_kind, options)
+local function find_permission_option(option_kind, options)
     for _, option in ipairs(options) do
         if option.kind == option_kind then
             return option
@@ -204,11 +260,11 @@ end
 ---@param permission acp.PermissionRequest
 ---@return acp.PermissionOutcome
 local function default_permission_outcome(permission)
-    local selected = pick_permission_option(config.get().permission_default, permission.options)
+    local selected = find_permission_option(config.get().permission_default, permission.options)
 
     if selected == nil then
-        selected = pick_permission_option('reject_once', permission.options)
-            or pick_permission_option('reject_always', permission.options)
+        selected = find_permission_option('reject_once', permission.options)
+            or find_permission_option('reject_always', permission.options)
     end
 
     if selected == nil then
@@ -224,49 +280,75 @@ local function default_permission_outcome(permission)
 end
 
 ---@param permission acp.PermissionRequest
----@return string
-local function permission_prompt(permission)
-    local title = permission.toolCall.title or permission.toolCall.toolCallId or 'Approval'
-    return string.format('ACP approval: %s', title)
-end
+---@param selection string|integer
+---@return acp.PermissionOutcome?
+local function permission_outcome_from_selection(permission, selection)
+    local selected_index = nil
+    local selected_option_id = nil
 
----@param option acp.PermissionOption
----@return string
-local function format_permission_option(option)
-    return string.format('%s  [%s]', option.name, option.kind)
-end
+    if type(selection) == 'number' then
+        selected_index = selection
+    elseif type(selection) == 'string' then
+        local trimmed = vim.trim(selection)
 
----@param selected_option acp.PermissionOption?
----@return acp.PermissionOutcome
-local function selected_permission_outcome(selected_option)
-    if selected_option == nil then
+        if trimmed == '' then
+            return nil
+        end
+
+        selected_index = tonumber(trimmed)
+
+        if selected_index == nil then
+            selected_option_id = trimmed
+        end
+    else
+        return nil
+    end
+
+    if selected_index ~= nil then
+        local option = permission.options[selected_index]
+
+        if option == nil then
+            return nil
+        end
+
         return {
-            outcome = 'cancelled',
+            outcome = 'selected',
+            optionId = option.optionId,
         }
     end
 
-    return {
-        outcome = 'selected',
-        optionId = selected_option.optionId,
-    }
-end
-
----@param permission acp.PermissionRequest
----@param on_choice fun(selected_option?: acp.PermissionOption)
-local function pick_permission_option(permission, on_choice)
-    local function open_picker()
-        vim.ui.select(permission.options, {
-            prompt = permission_prompt(permission),
-            format_item = format_permission_option,
-        }, on_choice)
+    for _, option in ipairs(permission.options) do
+        if option.optionId == selected_option_id then
+            return {
+                outcome = 'selected',
+                optionId = option.optionId,
+            }
+        end
     end
 
-    if vim.in_fast_event() then
-        vim.schedule(open_picker)
+    return nil
+end
+
+---@param current_session? acp.Session
+local function cancel_pending_permission(current_session)
+    local pending_permission = state.pending_permission
+
+    if pending_permission == nil then
         return
     end
 
-    open_picker()
+    if current_session ~= nil and pending_permission.local_session_id ~= current_session.id then
+        return
+    end
+
+    state.pending_permission = nil
+    local pending_session = session.get(pending_permission.local_session_id)
+
+    if pending_session ~= nil then
+        pending_session.pending_approval = nil
+    end
+
+    pending_permission.respond(cancelled_response())
 end
 
 ---@param generation integer
@@ -290,30 +372,55 @@ local function handle_permission_request(generation, permission, respond)
         return
     end
 
+    cancel_pending_permission(current_session)
     session.wait_for_approval(current_session, permission)
-    rerender(current_session)
+    state.pending_permission = {
+        generation = generation,
+        local_session_id = current_session.id,
+        permission = vim.deepcopy(permission),
+        respond = respond,
+    }
+    reveal_inline_approval(current_session)
+end
 
-    pick_permission_option(permission, function(selected_option)
-        if not is_live_generation(generation) then
-            return
-        end
+---@param current_session acp.Session
+---@param selection string|integer
+---@return acp.PermissionOutcome
+function M.select_pending_approval(current_session, selection)
+    local pending_permission = state.pending_permission
 
-        local live_session = nil
+    if pending_permission == nil or pending_permission.local_session_id ~= current_session.id then
+        error(string.format('No ACP approval is pending for session: %s', current_session.id))
+    end
 
-        live_session = active_request_session(permission)
+    if not is_live_generation(pending_permission.generation) then
+        state.pending_permission = nil
+        error('ACP approval is no longer active')
+    end
 
-        if live_session == nil then
-            respond(cancelled_response())
-            return
-        end
+    local live_session = active_request_session(pending_permission.permission)
 
-        local outcome = selected_permission_outcome(selected_option)
-        session.record_approval(live_session, permission, outcome, 'select')
-        rerender(live_session)
-        respond({
-            outcome = outcome,
-        })
-    end)
+    if live_session == nil then
+        cancel_pending_permission(current_session)
+        current_session.pending_approval = nil
+        rerender(current_session)
+        error('ACP approval is no longer active')
+    end
+
+    local outcome = permission_outcome_from_selection(pending_permission.permission, selection)
+
+    if outcome == nil then
+        error(string.format('Unknown ACP approval option: %s', tostring(selection)))
+    end
+
+    state.pending_permission = nil
+    session.record_approval(live_session, pending_permission.permission, outcome, 'select')
+    rerender(live_session)
+    pending_permission.respond({
+        outcome = outcome,
+    })
+
+    return outcome
 end
 
 ---@param current_session acp.Session
@@ -872,6 +979,7 @@ function M.cancel(current_session)
         return
     end
 
+    cancel_pending_permission(current_session)
     ensure_client():notify(methods.SESSION_CANCEL, {
         sessionId = current_session.remote_id,
     })
@@ -879,6 +987,13 @@ end
 
 ---Reset all ACP transport state.
 function M.clear()
+    local current_session = session.current()
+    cancel_pending_permission(nil)
+
+    if current_session ~= nil and buffer.get() ~= nil then
+        rerender(current_session)
+    end
+
     reset_connection()
     rpc_factory = function(opts)
         return rpc.new(opts)

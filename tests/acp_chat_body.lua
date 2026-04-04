@@ -165,6 +165,84 @@ it('renders streamed assistant updates and prompt completion', function()
     assert.is_true(vim.tbl_contains(lines, 'Hello world'))
 end)
 
+it('keeps a blank line between the transcript header and the first message header', function()
+    local bufnr = api.open_chat()
+
+    api.set_prompt('hello from ACP')
+    api.submit_prompt()
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    local transcript_header_line = vim.fn.index(lines, '## Transcript') + 1
+
+    assert.is_true(transcript_header_line > 0)
+    assert.are.equal('', lines[transcript_header_line + 1])
+    assert.are.equal('### User', lines[transcript_header_line + 2])
+end)
+
+it('names the ACP chat buffer with a parseable session locator', function()
+    local bufnr = api.open_chat()
+    local current_session = api.current_session()
+    local buffer = require('acp.buffer')
+    local name = vim.api.nvim_buf_get_name(bufnr)
+    local locator = buffer.session_locator(bufnr)
+
+    assert.are.equal('acp://session/local/acp:1', name)
+    assert.are.same({
+        local_id = current_session.id,
+    }, locator)
+    assert.are.equal(current_session.id, buffer.session_id(bufnr))
+
+    local next_session = api.new_session()
+    local next_name = vim.api.nvim_buf_get_name(bufnr)
+    local next_locator = buffer.session_locator(bufnr)
+
+    assert.are.equal('acp://session/local/acp:2', next_name)
+    assert.are.same({
+        local_id = next_session.id,
+    }, next_locator)
+    assert.are.equal(next_session.id, buffer.session_id(bufnr))
+
+    api.set_prompt('bind buffer name')
+    api.submit_prompt()
+
+    assert.are.equal('acp://session/remote/sess_123', vim.api.nvim_buf_get_name(bufnr))
+    assert.are.same({
+        remote_id = 'sess_123',
+    }, buffer.session_locator(bufnr))
+    assert.is_nil(buffer.session_id(bufnr))
+
+    local acp_buffers = vim.tbl_filter(function(candidate)
+        return buffer.session_locator(candidate) ~= nil
+    end, vim.api.nvim_list_bufs())
+
+    assert.are.same({ bufnr }, acp_buffers)
+end)
+
+it('rerenders transcript updates without replacing the whole chat buffer', function()
+    local bufnr = api.open_chat()
+    local original_set_lines = vim.api.nvim_buf_set_lines
+    local full_buffer_replace = false
+
+    api.set_prompt('draft prompt')
+
+    vim.api.nvim_buf_set_lines = function(target_bufnr, start, stop, strict_indexing, replacement)
+        if target_bufnr == bufnr and start == 0 and stop == -1 then
+            full_buffer_replace = true
+        end
+
+        return original_set_lines(target_bufnr, start, stop, strict_indexing, replacement)
+    end
+
+    local ok, err = pcall(function()
+        api.append_message('assistant', 'incremental rerender')
+    end)
+
+    vim.api.nvim_buf_set_lines = original_set_lines
+
+    assert.is_true(ok, err)
+    assert.is_false(full_buffer_replace)
+end)
+
 it('keeps ACP config options out of the transcript while preserving them in session state', function()
     local bufnr = api.open_chat()
 
@@ -391,6 +469,40 @@ it('keeps the chat pinned to the bottom while streamed updates arrive', function
     assert.are.equal(line_count, vim.fn.getwininfo(vim.api.nvim_get_current_win())[1].botline)
 end)
 
+it('does not jump the cursor to the prompt when the full chat is visible', function()
+    local bufnr = api.open_chat()
+
+    vim.api.nvim_win_set_height(0, 40)
+    api.set_prompt('cursor stay put')
+    api.submit_prompt()
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'agent_message_chunk',
+            content = {
+                type = 'text',
+                text = 'line 1\nline 2',
+            },
+        },
+    })
+
+    vim.api.nvim_win_set_cursor(0, { 1, 0 })
+
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'agent_message_chunk',
+            content = {
+                type = 'text',
+                text = '\nline 3',
+            },
+        },
+    })
+
+    assert.are.same({ 1, 0 }, vim.api.nvim_win_get_cursor(0))
+    assert.is_true(vim.fn.getwininfo(vim.api.nvim_get_current_win())[1].botline >= vim.api.nvim_buf_line_count(bufnr))
+end)
+
 it('preserves a scrolled-up view while streamed updates arrive', function()
     local bufnr = api.open_chat()
     local initial_lines = {}
@@ -429,6 +541,35 @@ it('preserves a scrolled-up view while streamed updates arrive', function()
 
     assert.are.same({ 1, 0 }, vim.api.nvim_win_get_cursor(0))
     assert.is_true(vim.fn.getwininfo(vim.api.nvim_get_current_win())[1].botline < vim.api.nvim_buf_line_count(bufnr))
+end)
+
+it('adds a missing space between streamed sentence chunks', function()
+    local bufnr = api.open_chat()
+
+    api.set_prompt('spacing please')
+    api.submit_prompt()
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'agent_message_chunk',
+            content = {
+                type = 'text',
+                text = 'Sentence one.',
+            },
+        },
+    })
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'agent_message_chunk',
+            content = {
+                type = 'text',
+                text = 'Sentence two.',
+            },
+        },
+    })
+
+    assert.is_true(vim.tbl_contains(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), 'Sentence one. Sentence two.'))
 end)
 
 it('keeps the transcript read-only while leaving the prompt naturally editable', function()
@@ -509,6 +650,15 @@ it('keeps the ACP prompt header outside the editable region', function()
     )
     assert.are.equal('', lines[input.prompt_header_line(bufnr) - 1])
     assert.are.equal('---', lines[input.prompt_header_line(bufnr) - 2])
+end)
+
+it('keeps a blank line between the prompt header and the editable prompt body', function()
+    local bufnr = api.open_chat()
+    local input = require('acp.input')
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+    assert.are.equal('', lines[input.prompt_start_line(bufnr) - 1])
+    assert.are.equal('## Prompt', lines[input.prompt_header_line(bufnr)])
 end)
 
 it('preserves prompt edit mode across ACP rerenders', function()
@@ -879,12 +1029,35 @@ it('renders tool calls inline in the transcript stream', function()
     })
 
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    local namespaces = vim.api.nvim_get_namespaces()
+    local marks = vim.api.nvim_buf_get_extmarks(bufnr, namespaces['acp.surface'], 0, -1, {
+        details = true,
+    })
+    local tool_line = vim.fn.index(lines, '◔ Read README  `/tmp/README.md:12`')
 
-    assert.is_true(vim.tbl_contains(lines, '- ◔ Read README'))
-    assert.is_true(vim.tbl_contains(lines, '  Status: `in_progress`'))
-    assert.is_true(vim.tbl_contains(lines, '  Kind: `read`'))
-    assert.is_true(vim.tbl_contains(lines, '  Locations: `/tmp/README.md:12`'))
-    assert.is_true(vim.tbl_contains(lines, '  Text: Reading README for context'))
+    assert.is_true(vim.tbl_contains(lines, '◔ Read README  `/tmp/README.md:12`'))
+    assert.is_false(vim.tbl_contains(lines, '  Status: `in_progress`'))
+    assert.is_false(vim.tbl_contains(lines, '  Kind: `read`'))
+    assert.is_false(vim.tbl_contains(lines, '  Locations: `/tmp/README.md:12`'))
+    assert.is_false(vim.tbl_contains(lines, 'Reading README for context'))
+    assert.is_true(tool_line >= 0)
+    assert.is_true(vim.tbl_contains(
+        vim.tbl_map(function(mark)
+            if mark[2] == tool_line then
+                return mark[4].hl_group
+            end
+
+            return nil
+        end, marks),
+        'ACPStatusPending'
+    ))
+
+    local pending_highlight = vim.api.nvim_get_hl(0, {
+        name = 'ACPStatusPending',
+    })
+
+    assert.is_not_nil(pending_highlight.fg)
+    assert.is_nil(pending_highlight.bg)
 end)
 
 it('updates an existing tool row instead of appending transcript status noise', function()
@@ -921,10 +1094,184 @@ it('updates an existing tool row instead of appending transcript status noise', 
 
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
-    assert.is_true(vim.tbl_contains(lines, '- ✓ Write config'))
-    assert.is_false(vim.tbl_contains(lines, '- ◔ Write config'))
-    assert.is_true(vim.tbl_contains(lines, '  Status: `completed`'))
-    assert.is_true(vim.tbl_contains(lines, '  Diff: `/tmp/init.lua`'))
+    assert.is_true(vim.tbl_contains(lines, '✓ Write config  `/tmp/init.lua`'))
+    assert.is_false(vim.tbl_contains(lines, '◔ Write config'))
+    assert.is_false(vim.tbl_contains(lines, '  Status: `completed`'))
+    assert.is_false(vim.tbl_contains(lines, '  Diff: `/tmp/init.lua`'))
+end)
+
+it('does not insert blank lines between consecutive tool rows', function()
+    local bufnr = api.open_chat()
+
+    api.set_prompt('stack tool rows')
+    api.submit_prompt()
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call',
+            toolCallId = 'tool_3',
+            title = 'Read file',
+            status = 'in_progress',
+        },
+    })
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call',
+            toolCallId = 'tool_4',
+            title = 'Write file',
+            status = 'pending',
+        },
+    })
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    local first_tool_line = vim.fn.index(lines, '◔ Read file')
+
+    assert.is_true(first_tool_line >= 0)
+    assert.are.equal('◔ Write file', lines[first_tool_line + 2])
+end)
+
+it('summarizes generic MCP tool calls without leaking raw JSON arguments', function()
+    local bufnr = api.open_chat()
+
+    api.set_prompt('use mcp')
+    api.submit_prompt()
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call',
+            toolCallId = 'tool_mcp',
+            title = 'approve mcp tool call',
+            status = 'waiting_for_approval',
+            content = {
+                {
+                    type = 'content',
+                    content = {
+                        type = 'text',
+                        text = '{"path":"/tmp/README.md","mode":"read"}',
+                    },
+                },
+            },
+            rawInput = {
+                serverName = 'filesystem',
+                toolName = 'read_file',
+                arguments = {
+                    path = '/tmp/README.md',
+                },
+            },
+        },
+    })
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+    assert.is_true(vim.tbl_contains(lines, '? Tool: `filesystem/read_file`'))
+    assert.is_false(vim.iter(lines):any(function(line)
+        return line:find('/tmp/README.md', 1, true) ~= nil
+    end))
+    assert.is_false(vim.iter(lines):any(function(line)
+        return line:find('{"path"', 1, true) ~= nil
+    end))
+end)
+
+it('prefers parsed command summaries when tool raw input provides them', function()
+    local bufnr = api.open_chat()
+
+    api.set_prompt('summarize a parsed command')
+    api.submit_prompt()
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call',
+            toolCallId = 'tool_parsed',
+            title = 'Run command',
+            status = 'in_progress',
+            kind = 'execute',
+            rawInput = {
+                command = 'sh',
+                args = { '-lc', 'printf ignored' },
+                parsed_cmd = 'git status --short',
+            },
+        },
+    })
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+    assert.is_true(vim.tbl_contains(lines, '◔ Run `git status --short`'))
+    assert.is_false(vim.tbl_contains(lines, "◔ Run `sh -lc 'printf ignored'`"))
+end)
+
+it('serves richer tool details through textDocument/hover in the ACP buffer', function()
+    local bufnr = api.open_chat()
+
+    api.set_prompt('hover a tool')
+    api.submit_prompt()
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call',
+            toolCallId = 'tool_5',
+            title = 'Run command',
+            status = 'completed',
+            kind = 'execute',
+            locations = {
+                {
+                    path = '/tmp/demo.lua',
+                    line = 8,
+                },
+            },
+            content = {
+                {
+                    type = 'content',
+                    content = {
+                        type = 'text',
+                        text = 'Command completed successfully',
+                    },
+                },
+            },
+            rawInput = {
+                command = 'lua',
+                args = { 'demo.lua' },
+            },
+            rawOutput = {
+                exitCode = 0,
+                stdout = 'done',
+            },
+        },
+    })
+
+    wait_until(function()
+        return #vim.lsp.get_clients({
+            bufnr = bufnr,
+            name = 'acp-hover',
+        }) == 1
+    end)
+
+    local line_number = vim.fn.index(
+        vim.api.nvim_buf_get_lines(bufnr, 0, -1, false),
+        '✓ Run `lua demo.lua`  `/tmp/demo.lua:8`'
+    ) + 1
+
+    vim.api.nvim_win_set_cursor(0, {
+        line_number,
+        0,
+    })
+
+    assert.is_true(line_number > 0)
+
+    wait_until(function()
+        return require('acp.hover').hover_result(bufnr, line_number - 1) ~= nil
+    end)
+
+    local preview = require('acp.hover').hover_result(bufnr, line_number - 1)
+    assert.is_not_nil(preview)
+
+    local preview_contents = vim.split(preview.contents.value, '\n', {
+        plain = true,
+    })
+
+    assert.is_true(vim.tbl_contains(preview_contents, '### Run `lua demo.lua`'))
+    assert.is_true(vim.tbl_contains(preview_contents, '- Status: `completed`'))
+    assert.is_true(vim.tbl_contains(preview_contents, '#### Raw Output'))
 end)
 
 it('uses an absolute cwd when creating the remote session', function()

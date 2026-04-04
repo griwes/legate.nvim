@@ -76,6 +76,7 @@
 ---@field messages acp.Message[]
 ---@field draft_prompt string
 ---@field pending_prompt string?
+---@field pending_approval? acp.PendingApproval
 ---@field remote_id string?
 ---@field remote_sync_state acp.RemoteSyncState
 ---@field remote_sync_error string?
@@ -92,6 +93,11 @@
 
 ---@class acp.BufferState
 ---@field bufnr integer?
+
+---@class acp.BufferLocator
+---@field local_id string?
+---@field remote_id string?
+---@field pending boolean?
 
 ---@class acp.TerminalHandle
 ---@field id string
@@ -253,6 +259,11 @@
 ---@class acp.PermissionRequest
 ---@field sessionId string
 ---@field toolCall { toolCallId?: string, title?: string }
+---@field options acp.PermissionOption[]
+
+---@class acp.PendingApproval
+---@field tool_call_id string?
+---@field title string
 ---@field options acp.PermissionOption[]
 
 ---@class acp.PermissionOutcome

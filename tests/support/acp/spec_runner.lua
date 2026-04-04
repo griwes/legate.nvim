@@ -333,6 +333,8 @@ function M.run(description, body_path)
             package.loaded['acp.commands'] = nil
             package.loaded['acp.config_option'] = nil
             package.loaded['acp.config'] = nil
+            package.loaded['acp.hover'] = nil
+            package.loaded['acp.hover_lsp'] = nil
             package.loaded['acp.input'] = nil
             package.loaded['acp.edit'] = nil
             package.loaded['acp.model'] = nil
@@ -341,6 +343,7 @@ function M.run(description, body_path)
             package.loaded['acp.rpc'] = nil
             package.loaded['acp.render'] = nil
             package.loaded['acp.session'] = nil
+            package.loaded['acp.status_message'] = nil
             package.loaded['acp.surface'] = nil
             package.loaded['acp.terminal'] = nil
             package.loaded['acp.transport'] = nil

@@ -1,5 +1,5 @@
 local defaults = {
-    chat_buffer_name = 'ACP.md',
+    chat_buffer_name = 'ACP',
     filetype = 'markdown',
     auto_create_session = true,
     persist_sessions = true,

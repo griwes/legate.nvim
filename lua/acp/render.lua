@@ -1,56 +1,13 @@
 local buffer = require('acp.buffer')
 local config = require('acp.config')
+local approval_ui = require('acp.approval_ui')
+local hover = require('acp.hover')
 local input = require('acp.input')
+local status_message = require('acp.status_message')
 local surface = require('acp.surface')
 
 ---@class acp.RenderModule
 local M = {}
-
----@param state string?
----@return string
-local function tool_icon(state)
-    if state == 'completed' then
-        return '✓'
-    end
-
-    if state == 'failed' then
-        return '✗'
-    end
-
-    if state == 'cancelled' then
-        return '○'
-    end
-
-    if state == 'waiting_for_approval' then
-        return '?'
-    end
-
-    return '◔'
-end
-
----@param state string?
----@return string
-local function approval_icon(state)
-    if state == 'allow_once' or state == 'allow_always' or state == 'selected' then
-        return '✓'
-    end
-
-    if state == 'reject_once' or state == 'reject_always' then
-        return '✗'
-    end
-
-    return '○'
-end
-
----@param message acp.Message
----@return string
-local function status_icon(message)
-    if message.stream_kind == 'approval' then
-        return approval_icon(message.status_state)
-    end
-
-    return tool_icon(message.status_state)
-end
 
 ---@param entries acp.PlanEntry[]
 ---@return string[]
@@ -68,28 +25,15 @@ local function format_plan(entries)
     return lines
 end
 
+---@param current_session acp.Session
 ---@param message acp.Message
 ---@return string[]
-local function format_message(message)
-    local text = message.text
-
+local function format_message(current_session, message)
     if message.role == 'status' then
-        local lines = {
-            string.format('- %s %s', status_icon(message), message.status_title or 'Status'),
-        }
-
-        for _, line in
-            ipairs(vim.split(text, '\n', {
-                plain = true,
-            }))
-        do
-            if line ~= '' then
-                table.insert(lines, string.format('  %s', line))
-            end
-        end
-
-        return lines
+        return { status_message.summary(current_session, message).text }
     end
+
+    local text = message.text
 
     local title = message.role:sub(1, 1):upper() .. message.role:sub(2)
     local lines = {
@@ -109,14 +53,21 @@ end
 
 ---Return the stable Markdown summary line for an approval entry.
 ---@param approval acp.ApprovalEntry
+---@param current_session? acp.Session
 ---@return string
-function M.approval_summary_line(approval)
-    return string.format(
-        '- %s Approval [%d] %s',
-        approval_icon(approval.selected_kind or approval.outcome),
-        approval.ordinal,
-        approval.title
-    )
+function M.approval_summary_line(approval, current_session)
+    local related_tool = nil
+
+    if current_session ~= nil then
+        for _, tool_call in ipairs(current_session.tool_calls) do
+            if tool_call.tool_call_id == approval.tool_call_id then
+                related_tool = tool_call
+                break
+            end
+        end
+    end
+
+    return status_message.approval_summary_line(approval, related_tool)
 end
 
 ---@param prompt string?
@@ -131,48 +82,79 @@ local function prompt_lines(prompt)
     })
 end
 
----@param session acp.Session
+---@class acp.RenderStatusRow
+---@field row integer
+---@field message_id integer
+---@field summary acp.StatusSummary
+
+---@class acp.RenderLayout
+---@field lines string[]
+---@field status_rows acp.RenderStatusRow[]
+
+---@param current_session acp.Session
 ---@param prompt string?
----@return string[]
-local function build_lines(session, prompt)
+---@return acp.RenderLayout
+local function build_layout(current_session, prompt)
     local prompt_body = prompt_lines(prompt)
-    local lines = {
-        '# ACP',
-        '',
+    ---@type acp.RenderLayout
+    local layout = {
+        lines = {
+            '# ACP',
+            '',
+        },
+        status_rows = {},
     }
 
-    if session.remote_sync_error ~= nil then
-        table.insert(lines, string.format('> Remote Sync Error: `%s`', session.remote_sync_error))
+    local lines = layout.lines
+
+    if current_session.remote_sync_error ~= nil then
+        table.insert(lines, string.format('> Remote Sync Error: `%s`', current_session.remote_sync_error))
     end
 
-    if session.remote_sync_state == 'load_failed' then
+    if current_session.remote_sync_state == 'load_failed' then
         table.insert(
             lines,
             '> Recovery: retry the recorded remote session with `:ACPLoadSession`, or create a fresh one with `:ACPRebindSession`'
         )
     end
 
-    if session.remote_sync_error ~= nil or session.remote_sync_state == 'load_failed' then
+    if current_session.remote_sync_error ~= nil or current_session.remote_sync_state == 'load_failed' then
         table.insert(lines, '')
     end
 
-    if #session.plan_entries > 0 then
-        for _, line in ipairs(format_plan(session.plan_entries)) do
+    if #current_session.plan_entries > 0 then
+        for _, line in ipairs(format_plan(current_session.plan_entries)) do
             table.insert(lines, line)
         end
     end
 
     table.insert(lines, config.get().transcript_header)
+    table.insert(lines, '')
 
-    if #session.messages == 0 then
+    if #current_session.messages == 0 then
         table.insert(lines, '_Empty._')
     else
-        for _, message in ipairs(session.messages) do
-            for _, line in ipairs(format_message(message)) do
-                table.insert(lines, line)
+        for index, message in ipairs(current_session.messages) do
+            if message.role == 'status' then
+                local summary = status_message.summary(current_session, message)
+
+                table.insert(layout.status_rows, {
+                    row = #lines,
+                    message_id = message.id,
+                    summary = summary,
+                })
+                table.insert(lines, summary.text)
+            else
+                for _, line in ipairs(format_message(current_session, message)) do
+                    table.insert(lines, line)
+                end
             end
 
-            table.insert(lines, '')
+            local next_message = current_session.messages[index + 1]
+
+            if not (message.role == 'status' and next_message ~= nil and next_message.role == 'status') then
+                table.insert(lines, '')
+            end
         end
     end
 
@@ -180,12 +162,46 @@ local function build_lines(session, prompt)
     table.insert(lines, '---')
     table.insert(lines, '')
     table.insert(lines, config.get().prompt_header)
+    table.insert(lines, '')
 
     for _, line in ipairs(prompt_body) do
         table.insert(lines, line)
     end
 
-    return lines
+    return layout
+end
+
+---@param bufnr integer
+---@param lines string[]
+local function replace_changed_range(bufnr, lines)
+    local current = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+    if vim.deep_equal(current, lines) then
+        return
+    end
+
+    local prefix = 0
+    local prefix_limit = math.min(#current, #lines)
+
+    while prefix < prefix_limit and current[prefix + 1] == lines[prefix + 1] do
+        prefix = prefix + 1
+    end
+
+    local suffix = 0
+    local current_limit = #current - prefix
+    local lines_limit = #lines - prefix
+
+    while suffix < current_limit and suffix < lines_limit and current[#current - suffix] == lines[#lines - suffix] do
+        suffix = suffix + 1
+    end
+
+    local replacement = {}
+
+    for index = prefix + 1, #lines - suffix do
+        table.insert(replacement, lines[index])
+    end
+
+    vim.api.nvim_buf_set_lines(bufnr, prefix, #current - suffix, false, replacement)
 end
 
 ---Render an ACP session into the shared chat buffer.
@@ -204,14 +220,18 @@ function M.render(session, prompt)
     local bufnr = buffer.ensure()
     local window_states = surface.capture_window_states(bufnr)
     local prompt_body = prompt_lines(prompt)
-    local lines = build_lines(session, prompt)
-    local prompt_header_row = #lines - #prompt_body - 1
+    local layout = build_layout(session, prompt)
+    local lines = layout.lines
+    local prompt_header_row = #lines - #prompt_body - 2
 
+    buffer.set_session_name(bufnr, session)
     buffer.with_mutation(bufnr, function()
-        vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+        replace_changed_range(bufnr, lines)
     end)
     input.set_anchor(bufnr, prompt_header_row)
-    surface.decorate(bufnr, session)
+    hover.set_status_rows(bufnr, layout.status_rows)
+    surface.decorate(bufnr, session, layout.status_rows)
+    approval_ui.apply(bufnr, session, session.pending_approval)
     surface.restore_window_states(bufnr, window_states)
 
     local ok, edit = pcall(require, 'acp.edit')

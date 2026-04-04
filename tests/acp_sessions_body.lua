@@ -40,9 +40,13 @@ end)
 it('creates and reuses a single chat buffer', function()
     local first = api.open_chat()
     local second = api.open_chat()
+    local buffer = require('acp.buffer')
 
     assert.are.equal(first, second)
-    assert.are.equal('ACP.md', vim.fn.fnamemodify(vim.api.nvim_buf_get_name(first), ':t'))
+    assert.are.equal('acp://session/local/acp:1', vim.api.nvim_buf_get_name(first))
+    assert.are.same({
+        local_id = 'acp:1',
+    }, buffer.session_locator(first))
     assert.are.equal(
         'markdown',
         vim.api.nvim_get_option_value('filetype', {

@@ -9,6 +9,7 @@ it('registers ACP user commands', function()
         'ACPRestoreSessions',
         'ACPClearSessionStorage',
         'ACPApprovals',
+        'ACPSelectApprovalOption',
         'ACPConfigOptions',
         'ACPSlashCommands',
         'ACPRevealApproval',
@@ -131,6 +132,116 @@ it('lists ACP approvals through the command surface', function()
     assert.are.same({
         '[1] Read file  outcome=selected  via=default  selected=Reject [reject_once]',
     }, notifications)
+end)
+
+it('resolves the current inline ACP approval through the command surface', function()
+    plugin.setup({
+        permission_strategy = 'select',
+    })
+    local bufnr = api.open_chat()
+    api.set_prompt('approval command select')
+    api.submit_prompt()
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call',
+            toolCallId = 'approval_select',
+            title = 'Run command',
+            status = 'pending',
+            kind = 'execute',
+        },
+    })
+
+    local response = nil
+
+    fake_client.opts.on_request('session/request_permission', {
+        sessionId = 'sess_123',
+        toolCall = {
+            toolCallId = 'approval_select',
+            title = 'Run command',
+        },
+        options = {
+            {
+                optionId = 'allow-once',
+                name = 'Allow once',
+                kind = 'allow_once',
+            },
+            {
+                optionId = 'reject-once',
+                name = 'Reject',
+                kind = 'reject_once',
+            },
+        },
+    }, function(result, error)
+        response = {
+            result = result,
+            error = error,
+        }
+    end)
+
+    vim.cmd('ACPSelectApprovalOption allow-once')
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+    assert.are.equal('selected', response.result.outcome.outcome)
+    assert.are.equal('allow-once', response.result.outcome.optionId)
+    assert.is_true(vim.tbl_contains(lines, '✓ Approval [1] Run command'))
+end)
+
+it('resolves a pending inline approval through the command surface even when another session is selected', function()
+    plugin.setup({
+        permission_strategy = 'select',
+    })
+    api.open_chat()
+    api.set_prompt('approval command select from another session')
+    local first = api.submit_prompt()
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call',
+            toolCallId = 'approval_select_other_session',
+            title = 'Run command',
+            status = 'pending',
+            kind = 'execute',
+        },
+    })
+
+    local second = api.new_session()
+
+    assert.are.equal(second.id, api.current_session().id)
+
+    local response = nil
+
+    fake_client.opts.on_request('session/request_permission', {
+        sessionId = 'sess_123',
+        toolCall = {
+            toolCallId = 'approval_select_other_session',
+            title = 'Run command',
+        },
+        options = {
+            {
+                optionId = 'allow-once',
+                name = 'Allow once',
+                kind = 'allow_once',
+            },
+            {
+                optionId = 'reject-once',
+                name = 'Reject',
+                kind = 'reject_once',
+            },
+        },
+    }, function(result, error)
+        response = {
+            result = result,
+            error = error,
+        }
+    end)
+
+    vim.cmd('ACPSelectApprovalOption allow-once')
+
+    assert.are.equal(first.id, api.current_session().id)
+    assert.are.equal('selected', response.result.outcome.outcome)
+    assert.are.equal('allow-once', response.result.outcome.optionId)
 end)
 
 it('lists ACP config options through the command surface', function()
@@ -278,7 +389,7 @@ it('reveals an ACP approval through the command surface', function()
     local cursor = vim.api.nvim_win_get_cursor(0)
     local line = vim.api.nvim_buf_get_lines(bufnr, cursor[1] - 1, cursor[1], false)[1]
 
-    assert.are.equal('- ✗ Approval [1] Write file', line)
+    assert.are.equal('✗ Approval [1] Write file', line)
 end)
 
 it('selects a local ACP session through the command surface', function()
@@ -344,7 +455,7 @@ it('reveals an ACP approval through the picker command surface', function()
     local cursor = vim.api.nvim_win_get_cursor(0)
     local line = vim.api.nvim_buf_get_lines(bufnr, cursor[1] - 1, cursor[1], false)[1]
 
-    assert.are.equal('- ✗ Approval [1] Delete file', line)
+    assert.are.equal('✗ Approval [1] Delete file', line)
 end)
 
 it('loads an ACP session through the command surface', function()

@@ -47,6 +47,21 @@ local function approval_ordinals()
     end, approvals)
 end
 
+---@return string[]
+local function pending_approval_option_ids()
+    local ok, pending_approval = pcall(function()
+        return api().pending_approval()
+    end)
+
+    if not ok or pending_approval == nil then
+        return {}
+    end
+
+    return vim.tbl_map(function(option)
+        return option.optionId
+    end, pending_approval.options or {})
+end
+
 ---@param session_id? string
 ---@return string[]
 local function config_option_ids(session_id)
@@ -184,6 +199,22 @@ function M.ensure()
         vim.notify(table.concat(lines, '\n'))
     end, {
         desc = 'List ACP approval history',
+    })
+
+    create('ACPSelectApprovalOption', function(opts)
+        local selection = vim.trim(opts.args)
+
+        if selection == '' then
+            error('ACPSelectApprovalOption expects an approval option id')
+        end
+
+        api().select_approval_option(selection)
+    end, {
+        desc = 'Resolve the current inline ACP approval by option id',
+        nargs = 1,
+        complete = function()
+            return pending_approval_option_ids()
+        end,
     })
 
     create('ACPConfigOptions', function()

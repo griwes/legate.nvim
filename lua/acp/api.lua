@@ -209,6 +209,28 @@ local function resolve_session(session_id)
     return active_session()
 end
 
+---@param session_id? string
+---@return acp.Session
+local function resolve_pending_approval_session(session_id)
+    if session_id ~= nil then
+        return resolve_session(session_id)
+    end
+
+    local pending_session = session.pending_approval_session()
+
+    if pending_session ~= nil then
+        return pending_session
+    end
+
+    local waiting_session = session.waiting()
+
+    if waiting_session ~= nil then
+        return waiting_session
+    end
+
+    return active_session()
+end
+
 ---@param current_session acp.Session
 ---@param config_id string
 ---@return acp.SessionConfigOption
@@ -473,6 +495,14 @@ function M.approvals(session_id)
     return vim.deepcopy(current_session.approval_entries)
 end
 
+---Return the currently pending inline ACP approval, if any.
+---@param session_id? string
+---@return acp.PendingApproval?
+function M.pending_approval(session_id)
+    local current_session = resolve_pending_approval_session(session_id)
+    return vim.deepcopy(session.pending_approval(current_session))
+end
+
 ---Return formatted approval lines for command-line display or picker use.
 ---@param session_id? string
 ---@return string[]
@@ -728,7 +758,7 @@ function M.reveal_approval(approval_ordinal, session_id)
     end
 
     local bufnr = buffer.open()
-    local target_line = render.approval_summary_line(approval)
+    local target_line = render.approval_summary_line(approval, current_session)
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
     for line_number, line in ipairs(lines) do
@@ -763,6 +793,15 @@ function M.pick_approval(session_id)
         end
         M.reveal_approval(selected_approval.ordinal, current_session.id)
     end)
+end
+
+---Resolve the current inline ACP approval by option id or 1-based index.
+---@param selection string|integer
+---@param session_id? string
+---@return acp.PermissionOutcome
+function M.select_approval_option(selection, session_id)
+    local current_session = resolve_pending_approval_session(session_id)
+    return transport.select_pending_approval(current_session, selection)
 end
 
 ---Explicitly bind or reload an ACP session against the remote transport.
