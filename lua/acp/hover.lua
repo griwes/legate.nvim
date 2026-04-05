@@ -65,7 +65,7 @@ end
 ---@return lsp.Hover?
 function M.hover_result(bufnr, row)
     local current_session = session.current()
-    local message = status_message_at_row(bufnr, row)
+    local message = status_message_at_row(bufnr, row + 1)
 
     if current_session == nil or message == nil then
         return nil

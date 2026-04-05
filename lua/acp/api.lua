@@ -324,7 +324,11 @@ end
 
 ---@param current_session acp.Session
 local function ensure_slash_commands(current_session)
-    if current_session.remote_id ~= nil and current_session.turn_id == 0 and current_session.status ~= 'cancelled' then
+    if current_session.remote_id ~= nil
+        and current_session.turn_id == 0
+        and current_session.status ~= 'cancelled'
+        and #current_session.available_commands > 0
+    then
         return
     end
 
@@ -491,7 +495,12 @@ end
 ---@param session_id? string
 ---@return acp.ApprovalEntry[]
 function M.approvals(session_id)
-    local current_session = resolve_session(session_id)
+    local current_session = session_id and session.get(session_id) or session.current()
+
+    if current_session == nil then
+        return {}
+    end
+
     return vim.deepcopy(current_session.approval_entries)
 end
 
@@ -501,6 +510,14 @@ end
 function M.pending_approval(session_id)
     local current_session = resolve_pending_approval_session(session_id)
     return vim.deepcopy(session.pending_approval(current_session))
+end
+
+---Return all currently pending inline ACP approvals for the resolved session.
+---@param session_id? string
+---@return acp.PendingApproval[]
+function M.pending_approvals(session_id)
+    local current_session = resolve_pending_approval_session(session_id)
+    return vim.deepcopy(session.pending_approvals(current_session))
 end
 
 ---Return formatted approval lines for command-line display or picker use.
@@ -537,7 +554,7 @@ function M.restore_sessions(opts)
     local has_buffer = buffer.get() ~= nil
 
     if current_session ~= nil then
-        if should_open then
+        if should_open and not has_buffer then
             M.open_chat()
         elseif has_buffer then
             render.render(current_session, current_session.draft_prompt)
@@ -801,6 +818,32 @@ end
 ---@return acp.PermissionOutcome
 function M.select_approval_option(selection, session_id)
     local current_session = resolve_pending_approval_session(session_id)
+
+    if type(selection) == 'string' then
+        local request_id, option_id = selection:match('^(.-):([^:]+)$')
+
+        if request_id ~= nil and option_id ~= nil then
+            local pending = session.pending_approval(current_session)
+
+            if pending == nil or pending.request_id ~= request_id then
+                for _, candidate in ipairs(session.pending_approvals(current_session)) do
+                    if candidate.request_id == request_id then
+                        pending = candidate
+                        break
+                    end
+                end
+            end
+
+            if pending ~= nil and pending.request_id == request_id then
+                selection = option_id
+                if session.pending_approval(current_session) ~= pending then
+                    session.clear_pending_approval_by_request_id(current_session, pending.request_id)
+                    table.insert(current_session.pending_approvals, 1, pending)
+                end
+            end
+        end
+    end
+
     return transport.select_pending_approval(current_session, selection)
 end
 
@@ -839,14 +882,14 @@ function M.rebind_session(session_id)
 
     local prompt = visible_prompt(current_session)
     local ok, err = pcall(transport.rebind, current_session)
+    if not ok then
+        error(err, 0)
+    end
+
     local selected_session = session.current()
 
     if buffer.get() ~= nil and selected_session ~= nil and selected_session.id == current_session.id then
         render.render(current_session, prompt)
-    end
-
-    if not ok then
-        error(err, 0)
     end
 
     return current_session

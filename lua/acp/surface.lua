@@ -154,16 +154,25 @@ end
 ---@param session acp.Session
 ---@param status_rows acp.RenderStatusRow[]
 function M.decorate(bufnr, session, status_rows)
+    status_rows = status_rows or {}
+
     ensure_highlights()
     vim.api.nvim_buf_clear_namespace(bufnr, namespace, 0, -1)
 
-    if session.status == 'waiting' and session.pending_approval == nil then
+    if session.status == 'waiting' then
         local prompt_header_line = require('acp.input').prompt_header_line(bufnr)
         local waiting_row = math.max(prompt_header_line - 4, 0)
+        local waiting_text = 'Working...'
+
+        local pending_approval = require('acp.session').pending_approval(session)
+
+        if pending_approval ~= nil then
+            waiting_text = require('acp.status_message').pending_approval_overlay_text(session, pending_approval)
+        end
 
         vim.api.nvim_buf_set_extmark(bufnr, namespace, waiting_row, 0, {
             virt_text = {
-                { 'Working...', 'Comment' },
+                { waiting_text, 'Comment' },
             },
             virt_text_pos = 'overlay',
         })
@@ -171,7 +180,7 @@ function M.decorate(bufnr, session, status_rows)
 
     for _, entry in ipairs(status_rows) do
         for _, highlight in ipairs(entry.summary.highlights or {}) do
-            vim.api.nvim_buf_set_extmark(bufnr, namespace, entry.row, highlight.start_col, {
+            vim.api.nvim_buf_set_extmark(bufnr, namespace, entry.row - 1, highlight.start_col, {
                 end_col = highlight.end_col,
                 hl_group = highlight.group,
             })

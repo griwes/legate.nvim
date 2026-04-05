@@ -39,15 +39,15 @@ local function session_locator_from_name(name)
         trimempty = true,
     })
 
-    if #parts == 1 then
-        return {
-            local_id = parts[1],
-        }
-    end
-
     if parts[1] == 'pending' then
         return {
             pending = true,
+        }
+    end
+
+    if #parts == 1 then
+        return {
+            local_id = parts[1],
         }
     end
 

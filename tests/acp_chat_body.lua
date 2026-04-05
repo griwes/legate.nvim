@@ -572,6 +572,121 @@ it('adds a missing space between streamed sentence chunks', function()
     assert.is_true(vim.tbl_contains(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), 'Sentence one. Sentence two.'))
 end)
 
+it('survives decorating the transcript without status rows', function()
+    local bufnr = api.open_chat()
+
+    local ok = pcall(function()
+        require('acp.surface').decorate(bufnr, api.current_session())
+    end)
+
+    assert.is_true(ok)
+end)
+
+it('keeps punctuation-boundary spacing predictable for streamed chunks', function()
+    local current_session = require('acp.session').create()
+
+    require('acp.session').append_message(current_session, 'assistant', 'Sentence one.')
+
+    local merged = require('acp.session').append_chunk(current_session, 'assistant', 'Sentence two.')
+
+    assert.are.equal('Sentence one. Sentence two.', merged.text)
+
+    local compact = require('acp.session').create()
+
+    require('acp.session').append_message(compact, 'assistant', 'Sentence one')
+
+    local compacted = require('acp.session').append_chunk(compact, 'assistant', '(')
+
+    assert.are.equal('Sentence one(', compacted.text)
+
+    local spaced = require('acp.session').create()
+
+    require('acp.session').append_message(spaced, 'assistant', 'Sentence one')
+
+    local spaced_chunk = require('acp.session').append_chunk(spaced, 'assistant', ' sentence two')
+
+    assert.are.equal('Sentence one sentence two', spaced_chunk.text)
+end)
+
+it('escapes inline-code delimiters in tool call summaries', function()
+    local summary = require('acp.status_message').tool_call_summary({
+        status = 'completed',
+        kind = 'execute',
+        title = 'Run command',
+        raw_input = {
+            parsed_cmd = 'printf `unsafe`',
+        },
+        locations = {},
+        content = {},
+    })
+
+    assert.are.equal('✓ Run `` printf `unsafe` ``', summary.text)
+end)
+
+it('renders approval status rows compactly and exposes hover payload content', function()
+    local bufnr = api.open_chat()
+    local status_message = require('acp.status_message')
+
+    api.set_prompt('approval hover')
+    api.submit_prompt()
+
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call',
+            toolCallId = 'approval_hover',
+            title = 'approve mcp tool call',
+            status = 'pending',
+            kind = 'read',
+            rawInput = {
+                parsed_cmd = 'rm -rf /tmp/unsafe`path`',
+            },
+        },
+    })
+
+    local response = fake_client:emit_request('session/request_permission', {
+        sessionId = 'sess_123',
+        toolCall = {
+            toolCallId = 'approval_hover',
+            title = 'approve mcp tool call',
+        },
+        options = {
+            {
+                optionId = 'reject-once',
+                name = 'Reject',
+                kind = 'reject_once',
+            },
+        },
+    })
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    local approval = api.current_session().approval_entries[1]
+    local tool_call = api.current_session().tool_calls[1]
+    local expected_line = status_message.approval_summary(approval, tool_call).text
+    local approval_line = vim.fn.index(lines, expected_line) + 1
+    local expected_label = expected_line:match('Approval %[%d+%] (.*)')
+
+    assert.is_true(approval_line > 0)
+    assert.are.equal('selected', response.result.outcome.outcome)
+
+    local hover = require('acp.hover').hover_result(bufnr, approval_line - 1)
+
+    assert.is_not_nil(hover)
+
+    local preview_lines = vim.split(hover.contents.value, '\n', {
+        plain = true,
+    })
+
+    assert.is_not_nil(expected_label)
+    assert.is_true(vim.tbl_contains(preview_lines, string.format('### Approval [1]: %s', expected_label)))
+    assert.is_true(vim.tbl_contains(preview_lines, '- Source: `default`'))
+    assert.is_not_nil(
+        vim.tbl_filter(function(line)
+            return line:match('^%- Outcome: `') ~= nil
+        end, preview_lines)[1]
+    )
+end)
+
 it('keeps the transcript read-only while leaving the prompt naturally editable', function()
     local bufnr = api.open_chat()
     local edit = require('acp.edit')
@@ -954,6 +1069,7 @@ it('applies available_commands_update emitted during session/load', function()
                     {
                         name = 'resume',
                         description = 'Resume-only command',
+                        input = vim.NIL,
                     },
                 },
             },
@@ -961,10 +1077,57 @@ it('applies available_commands_update emitted during session/load', function()
     end
 
     local commands = api.slash_commands()
+    local command_lines = api.slash_command_lines()
+    local slash_call = api.run_slash_command('resume')
+    local last_call = fake_client.async_calls[#fake_client.async_calls]
 
     assert.are.equal(1, #commands)
     assert.are.equal('resume', commands[1].name)
+    assert.is_nil(commands[1].input)
+    assert.are.equal('/resume  Resume-only command', command_lines[1])
+    assert.are.equal('session/prompt', last_call.method)
+    assert.are.equal('/resume', last_call.params.prompt[1].text)
+    assert.are.equal('/resume', slash_call.pending_prompt)
 end)
+
+it('reloads slash commands for a remote-bound session whose cache is empty', function()
+    fake_supports_load = true
+    api.open_chat()
+    api.set_prompt('first turn')
+    api.submit_prompt()
+    fake_client:resolve({
+        stopReason = 'end_turn',
+    })
+
+    fake_on_load = function(client, params)
+        client:emit_notification('session/update', {
+            sessionId = params.sessionId,
+            update = {
+                sessionUpdate = 'available_commands_update',
+                availableCommands = {
+                    {
+                        name = 'resume',
+                        description = 'Resume-only command',
+                        input = vim.NIL,
+                    },
+                },
+            },
+        })
+    end
+
+    api.current_session().available_commands = {}
+
+    local commands = api.slash_commands()
+
+    assert.are.same({
+        {
+            name = 'resume',
+            description = 'Resume-only command',
+        },
+    }, commands)
+    assert.are.same({ 'resume' }, api.slash_command_names())
+end)
+
 
 it('does not submit an ACP slash command from the picker when required input is blank', function()
     local notifications = {}
@@ -1198,6 +1361,51 @@ it('prefers parsed command summaries when tool raw input provides them', functio
 
     assert.is_true(vim.tbl_contains(lines, '◔ Run `git status --short`'))
     assert.is_false(vim.tbl_contains(lines, "◔ Run `sh -lc 'printf ignored'`"))
+end)
+
+it('normalizes parsed command strings and ignores malformed parsed args', function()
+    local bufnr = api.open_chat()
+
+    api.set_prompt('summarize a malformed parsed command')
+    api.submit_prompt()
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call',
+            toolCallId = 'tool_parsed_malformed',
+            title = 'Run command',
+            status = 'in_progress',
+            kind = 'execute',
+            rawInput = {
+                parsedCommand = 'git `status`\n--short',
+            },
+        },
+    })
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call',
+            toolCallId = 'tool_parsed_args',
+            title = 'Run command',
+            status = 'in_progress',
+            kind = 'execute',
+            rawInput = {
+                parsed_cmd = {
+                    command = 'git',
+                    args = 'status --short',
+                },
+            },
+        },
+    })
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+    assert.is_true(vim.iter(lines):any(function(line)
+        return line:find('◔ Run ', 1, true) == 1
+            and line:find('git `status` --short', 1, true) ~= nil
+            and line:find('\n', 1, true) == nil
+    end))
+    assert.is_true(vim.tbl_contains(lines, '◔ Run `git`'))
 end)
 
 it('serves richer tool details through textDocument/hover in the ACP buffer', function()

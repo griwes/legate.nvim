@@ -134,6 +134,30 @@ it('lists ACP approvals through the command surface', function()
     }, notifications)
 end)
 
+it('does not auto-create a session for ACP approval completion or listing', function()
+    local definition = vim.api.nvim_get_commands({
+        builtin = false,
+    })['ACPRevealApproval']
+    local notifications = {}
+    local original_notify = vim.notify
+
+    assert.is_not_nil(definition)
+    assert.are.same({}, definition.complete('', 'ACPRevealApproval ', 0))
+    assert.are.equal(0, #api.list_sessions())
+
+    vim.notify = function(message)
+        table.insert(notifications, message)
+    end
+
+    local ok, err = pcall(vim.cmd, 'ACPApprovals')
+
+    vim.notify = original_notify
+
+    assert.is_true(ok, err)
+    assert.are.same({'No ACP approvals are available'}, notifications)
+    assert.are.equal(0, #api.list_sessions())
+end)
+
 it('resolves the current inline ACP approval through the command surface', function()
     plugin.setup({
         permission_strategy = 'select',
@@ -186,6 +210,50 @@ it('resolves the current inline ACP approval through the command surface', funct
     assert.are.equal('selected', response.result.outcome.outcome)
     assert.are.equal('allow-once', response.result.outcome.optionId)
     assert.is_true(vim.tbl_contains(lines, '✓ Approval [1] Run command'))
+end)
+
+it('completes approval option indexes alongside option ids', function()
+    plugin.setup({
+        permission_strategy = 'select',
+    })
+    api.open_chat()
+    api.set_prompt('approval command completion')
+    api.submit_prompt()
+    fake_client:emit_request('session/request_permission', {
+        sessionId = 'sess_123',
+        toolCall = {
+            toolCallId = 'approval_completion',
+            title = 'Run command',
+        },
+        options = {
+            {
+                optionId = 'allow-once',
+                name = 'Allow once',
+                kind = 'allow_once',
+            },
+            {
+                optionId = 'reject-once',
+                name = 'Reject',
+                kind = 'reject_once',
+            },
+        },
+    })
+
+    local definition = vim.api.nvim_get_commands({
+        builtin = false,
+    })['ACPSelectApprovalOption']
+
+    assert.are.same(
+        {
+            'acp:1:approval_completion:1:allow-once',
+            'acp:1:approval_completion:1:reject-once',
+            '1',
+            'allow-once',
+            '2',
+            'reject-once',
+        },
+        definition.complete('', 'ACPSelectApprovalOption ', 0)
+    )
 end)
 
 it('resolves a pending inline approval through the command surface even when another session is selected', function()
@@ -242,6 +310,50 @@ it('resolves a pending inline approval through the command surface even when ano
     assert.are.equal(first.id, api.current_session().id)
     assert.are.equal('selected', response.result.outcome.outcome)
     assert.are.equal('allow-once', response.result.outcome.optionId)
+end)
+
+it('resolves queued approvals one at a time through the command surface', function()
+    plugin.setup({
+        permission_strategy = 'select',
+    })
+    api.open_chat()
+    api.set_prompt('approval command queue')
+    api.submit_prompt()
+
+    local first_response = nil
+    fake_client.opts.on_request('session/request_permission', {
+        sessionId = 'sess_123',
+        toolCall = { toolCallId = 'approval_queue_first', title = 'First queued command' },
+        options = {
+            { optionId = 'allow-first', name = 'Allow first', kind = 'allow_once' },
+        },
+    }, function(result, error)
+        first_response = { result = result, error = error }
+    end)
+
+    local second_response = nil
+    fake_client.opts.on_request('session/request_permission', {
+        sessionId = 'sess_123',
+        toolCall = { toolCallId = 'approval_queue_second', title = 'Second queued command' },
+        options = {
+            { optionId = 'allow-second', name = 'Allow second', kind = 'allow_once' },
+        },
+    }, function(result, error)
+        second_response = { result = result, error = error }
+    end)
+
+    assert.are.equal(2, #api.pending_approvals())
+    assert.is_nil(first_response)
+    assert.are.equal('approval_queue_first', api.pending_approval().tool_call_id)
+    vim.cmd('ACPSelectApprovalOption allow-first')
+    assert.are.equal('selected', first_response.result.outcome.outcome)
+    assert.are.equal('allow-first', first_response.result.outcome.optionId)
+    assert.are.equal(1, #api.pending_approvals())
+    assert.are.equal('approval_queue_second', api.pending_approval().tool_call_id)
+    vim.cmd('ACPSelectApprovalOption allow-second')
+    assert.are.equal('selected', second_response.result.outcome.outcome)
+    assert.are.equal('allow-second', second_response.result.outcome.optionId)
+    assert.is_nil(api.pending_approval())
 end)
 
 it('lists ACP config options through the command surface', function()

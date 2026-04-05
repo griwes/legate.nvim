@@ -76,8 +76,9 @@
 ---@field messages acp.Message[]
 ---@field draft_prompt string
 ---@field pending_prompt string?
----@field pending_approval? acp.PendingApproval
+---@field pending_approvals acp.PendingApproval[]
 ---@field remote_id string?
+---@field transport_remote_id string?
 ---@field remote_sync_state acp.RemoteSyncState
 ---@field remote_sync_error string?
 ---@field stop_reason acp.StopReason?
@@ -261,11 +262,6 @@
 ---@field toolCall { toolCallId?: string, title?: string }
 ---@field options acp.PermissionOption[]
 
----@class acp.PendingApproval
----@field tool_call_id string?
----@field title string
----@field options acp.PermissionOption[]
-
 ---@class acp.PermissionOutcome
 ---@field outcome 'cancelled'|'selected'
 ---@field optionId? string
@@ -380,3 +376,19 @@
 ---@field next_ordinal integer
 ---@field next_message_id integer
 ---@field sessions acp.Session[]
+
+---@class acp.PendingApproval
+---@field request_id string
+---@field ordinal integer
+---@field tool_call_id string?
+---@field title string
+---@field options acp.PermissionOption[]
+---@field generation integer
+---@field created_at integer
+
+---@class acp.PendingPermissionState
+---@field request_id string
+---@field generation integer
+---@field local_session_id string
+---@field permission acp.PermissionRequest
+---@field respond fun(result?: any, error?: table)

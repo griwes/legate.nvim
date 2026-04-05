@@ -1,6 +1,8 @@
 local function begin_permission_request(params)
     local response = nil
 
+    params = vim.deepcopy(params)
+
     fake_client.opts.on_request('session/request_permission', params, function(result, error)
         response = {
             result = result,
@@ -35,6 +37,19 @@ local function approval_virtual_lines(bufnr)
     end, virt_lines)
 
     return lines, marks
+end
+
+---@param bufnr integer
+---@return string[]
+local function surface_virtual_texts(bufnr)
+    local namespace = vim.api.nvim_get_namespaces()['acp.surface']
+    local marks = vim.api.nvim_buf_get_extmarks(bufnr, namespace, 0, -1, {
+        details = true,
+    })
+
+    return vim.tbl_map(function(mark)
+        return mark[4].virt_text and mark[4].virt_text[1] and mark[4].virt_text[1][1] or nil
+    end, marks)
 end
 
 it('responds to permission requests with the configured default option', function()
@@ -81,6 +96,49 @@ it('responds to permission requests with the configured default option', functio
     assert.are.equal('default', approvals[1].source)
     assert.are.equal('Reject', approvals[1].selected_option_name)
     assert.are.equal(2, #approvals[1].options)
+    assert.is_true(vim.tbl_contains(lines, '✗ Approval [1] Read config'))
+end)
+
+it('sanitizes multiline approval option names for rendering', function()
+    local bufnr = api.open_chat()
+    api.set_prompt('need multiline permission')
+    api.submit_prompt()
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call',
+            toolCallId = 'call_2',
+            title = 'Read config',
+            status = 'pending',
+            kind = 'read',
+        },
+    })
+
+    local response = fake_client:emit_request('session/request_permission', {
+        sessionId = 'sess_123',
+        toolCall = {
+            toolCallId = 'call_2',
+        },
+        options = {
+            {
+                optionId = 'allow-once',
+                name = 'Allow once',
+                kind = 'allow_once',
+            },
+            {
+                optionId = 'reject-once',
+                name = 'Reject\none',
+                kind = 'reject_once',
+            },
+        },
+    })
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    local status_text = require('acp.status_message').approval_status_text(api.approvals()[1])
+
+    assert.are.equal('selected', response.result.outcome.outcome)
+    assert.are.equal('reject-once', response.result.outcome.optionId)
+    assert.is_false(status_text:find('Reject\none', 1, true) ~= nil)
+    assert.is_true(status_text:find('Reject one', 1, true) ~= nil)
     assert.is_true(vim.tbl_contains(lines, '✗ Approval [1] Read config'))
 end)
 
@@ -142,7 +200,7 @@ it('renders an inline approval surface and resolves it through the ACP API when 
 
     assert.are.same(1, #marks)
     assert.are.same({
-        'Approval needed for Run command',
+        'Pending approvals (1) — active: Run command',
         'g1 Allow once',
         'g2 Reject',
     }, approval_lines)
@@ -159,6 +217,116 @@ it('renders an inline approval surface and resolves it through the ACP API when 
     assert.are.equal('Allow once', approvals[1].selected_option_name)
     assert.is_true(vim.tbl_contains(lines, '✓ Approval [1] Run command'))
 end)
+
+it('limits approval overlay shortcuts to mapped keys', function()
+    plugin.setup({
+        permission_strategy = 'select',
+    })
+    local bufnr = api.open_chat()
+    api.set_prompt('many approval options')
+    api.submit_prompt()
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call',
+            toolCallId = 'call_many_overlay',
+            title = 'Run command',
+            status = 'pending',
+            kind = 'execute',
+        },
+    })
+
+    local options = {}
+
+    for index = 1, 10 do
+        table.insert(options, {
+            optionId = string.format('option-%d', index),
+            name = string.format('Option %d', index),
+            kind = 'allow_once',
+        })
+    end
+
+    begin_permission_request({
+        sessionId = 'sess_123',
+        toolCall = {
+            toolCallId = 'call_many_overlay',
+            title = 'Run command',
+        },
+        options = options,
+    })
+
+    assert.is_true(vim.tbl_contains(
+        surface_virtual_texts(bufnr),
+        'Approval needed for Run command: g1 Option 1, g2 Option 2, g3 Option 3, g4 Option 4, g5 Option 5, g6 Option 6, g7 Option 7, g8 Option 8, g9 Option 9, … use :ACPSelectApprovalOption 10'
+    ))
+    assert.are.same({
+        'Pending approvals (1) — active: Run command',
+        'g1 Option 1',
+        'g2 Option 2',
+        'g3 Option 3',
+        'g4 Option 4',
+        'g5 Option 5',
+        'g6 Option 6',
+        'g7 Option 7',
+        'g8 Option 8',
+        'g9 Option 9',
+        '… use :ACPSelectApprovalOption 10',
+    }, approval_virtual_lines(bufnr))
+end)
+
+it(
+    'reuses a placeholder tool-call row when the canonical tool-call event arrives late for a pending approval',
+    function()
+        plugin.setup({
+            permission_strategy = 'select',
+        })
+        local bufnr = api.open_chat()
+        api.set_prompt('late tool event')
+        api.submit_prompt()
+        local response = begin_permission_request({
+            sessionId = 'sess_123',
+            toolCall = {
+                toolCallId = 'call_late_tool',
+                title = 'Late tool',
+            },
+            options = {
+                {
+                    optionId = 'allow-once',
+                    name = 'Allow once',
+                    kind = 'allow_once',
+                },
+            },
+        })
+
+        local session = api.current_session()
+        assert.is_not_nil(session)
+        assert.are.equal(1, #session.tool_calls)
+        assert.are.equal('waiting_for_approval', session.tool_calls[1].status)
+        assert.are.equal('Late tool', session.tool_calls[1].title)
+
+        fake_client:emit_notification('session/update', {
+            sessionId = 'sess_123',
+            update = {
+                sessionUpdate = 'tool_call',
+                toolCallId = 'call_late_tool',
+                title = 'Late tool',
+                status = 'in_progress',
+                kind = 'write',
+            },
+        })
+
+        session = api.current_session()
+        assert.is_not_nil(session)
+        assert.are.equal(1, #session.tool_calls)
+        assert.are.equal('in_progress', session.tool_calls[1].status)
+        assert.is_true(vim.tbl_contains(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), '◔ Late tool'))
+
+        api.select_approval_option('allow-once')
+
+        assert.are.equal('selected', response().result.outcome.outcome)
+        assert.are.equal('allow-once', response().result.outcome.optionId)
+    end
+)
 
 it('matches a live inline approval request even when the request omits sessionId', function()
     plugin.setup({
@@ -200,7 +368,7 @@ it('matches a live inline approval request even when the request omits sessionId
     assert.is_nil(response())
     assert.are.equal('call_select_no_session', api.pending_approval().tool_call_id)
     assert.are.same({
-        'Approval needed for Run command',
+        'Pending approvals (1) — active: Run command',
         'g1 Allow once',
         'g2 Reject',
     }, approval_virtual_lines(bufnr))
@@ -209,6 +377,48 @@ it('matches a live inline approval request even when the request omits sessionId
 
     assert.are.equal('selected', response().result.outcome.outcome)
     assert.are.equal('allow-once', response().result.outcome.optionId)
+end)
+
+it('falls back to command-based approval hints for options beyond mapped keys', function()
+    plugin.setup({
+        permission_strategy = 'select',
+    })
+    api.open_chat()
+    api.set_prompt('many permissions')
+    api.submit_prompt()
+
+    local options = {}
+
+    for index = 1, 10 do
+        table.insert(options, {
+            optionId = string.format('option-%d', index),
+            name = string.format('Option %d', index),
+            kind = 'allow_once',
+        })
+    end
+
+    begin_permission_request({
+        sessionId = 'sess_123',
+        toolCall = {
+            toolCallId = 'call_many_select',
+            title = 'Run command',
+        },
+        options = options,
+    })
+
+    local lines = require('acp.status_message').pending_approval_lines(api.current_session(), api.pending_approval())
+    assert.are.equal(
+        'Option 1 [allow_once] (`option-1`)  ->  select with `g1`, `:ACPSelectApprovalOption 1`, or use the inline action',
+        lines[5]
+    )
+    assert.are.equal(
+        'Option 9 [allow_once] (`option-9`)  ->  select with `g9`, `:ACPSelectApprovalOption 9`, or use the inline action',
+        lines[13]
+    )
+    assert.are.equal(
+        'Option 10 [allow_once] (`option-10`)  ->  select with `:ACPSelectApprovalOption 10` or use the inline action',
+        lines[14]
+    )
 end)
 
 it('renders inline approvals even when the permission request arrives in a fast event context', function()
@@ -271,7 +481,7 @@ it('renders inline approvals even when the permission request arrives in a fast 
     assert.is_true(vim.tbl_contains(lines, '✓ Approval [1] Run command'))
 end)
 
-it('replaces an older pending approval without clearing the newer inline surface', function()
+it('queues a new pending approval without cancelling the prior in-flight request', function()
     plugin.setup({
         permission_strategy = 'select',
     })
@@ -319,16 +529,168 @@ it('replaces an older pending approval without clearing the newer inline surface
 
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
-    assert.are.equal('cancelled', first().result.outcome.outcome)
-    assert.is_nil(first().result.outcome.optionId)
+    assert.is_nil(second())
+    assert.is_nil(first())
+    assert.are.equal('call_replace_first', api.pending_approval().tool_call_id)
+    assert.are.equal(2, #api.pending_approvals())
+    assert.is_true(vim.tbl_contains(lines, '? First command'))
+    assert.are.same({
+        'Pending approvals (2) — active: First command',
+        'g1 Allow first',
+        'Queued [2] Second command',
+    }, approval_virtual_lines(bufnr))
+
+    api.select_approval_option('allow-first')
+
+    assert.are.equal('selected', first().result.outcome.outcome)
+    assert.are.equal('allow-first', first().result.outcome.optionId)
     assert.is_nil(second())
     assert.are.equal('call_replace_second', api.pending_approval().tool_call_id)
-    assert.is_true(vim.tbl_contains(lines, '? Second command'))
-    assert.are.same({
-        'Approval needed for Second command',
-        'g1 Allow second',
-        'g2 Reject second',
-    }, approval_virtual_lines(bufnr))
+
+    api.select_approval_option('allow-second')
+
+    assert.are.equal('selected', second().result.outcome.outcome)
+    assert.are.equal('allow-second', second().result.outcome.optionId)
+    assert.is_nil(api.pending_approval())
+end)
+
+it('resolves queued approvals by request-qualified option id', function()
+    plugin.setup({
+        permission_strategy = 'select',
+    })
+    api.open_chat()
+    api.set_prompt('multiple pending approvals')
+    api.submit_prompt()
+
+    local first = begin_permission_request({
+        sessionId = 'sess_123',
+        toolCall = {
+            toolCallId = 'call_first_queue',
+            title = 'First command',
+        },
+        options = {
+            {
+                optionId = 'allow-first',
+                name = 'Allow first',
+                kind = 'allow_once',
+            },
+            {
+                optionId = 'reject-first',
+                name = 'Reject first',
+                kind = 'reject_once',
+            },
+        },
+    })
+
+    local second = begin_permission_request({
+        sessionId = 'sess_123',
+        toolCall = {
+            toolCallId = 'call_second_queue',
+            title = 'Second command',
+        },
+        options = {
+            {
+                optionId = 'allow-second',
+                name = 'Allow second',
+                kind = 'allow_once',
+            },
+            {
+                optionId = 'reject-second',
+                name = 'Reject second',
+                kind = 'reject_once',
+            },
+        },
+    })
+
+    local pending = api.pending_approvals()
+    assert.are.equal(2, #pending)
+    assert.are.equal('call_first_queue', pending[1].tool_call_id)
+    assert.are.equal('call_second_queue', pending[2].tool_call_id)
+    assert.is_nil(first())
+
+    api.select_approval_option(string.format('%s:%s', pending[1].request_id, 'allow-first'))
+    assert.are.equal('allow-first', first().result.outcome.optionId)
+    assert.are.equal('call_second_queue', api.pending_approval().tool_call_id)
+    api.select_approval_option(string.format('%s:%s', pending[2].request_id, 'allow-second'))
+    assert.are.equal('allow-second', second().result.outcome.optionId)
+    assert.is_nil(api.pending_approval())
+end)
+
+it('keeps other queued approvals when a selected request has no active session', function()
+    local permission = require('acp.handlers.permission')
+    local current_session = {
+        id = 'acp:1',
+    }
+    local rerendered = nil
+    local cancelled = false
+    local retained = nil
+    local stale_permission = {
+        options = {
+            {
+                optionId = 'allow-stale',
+                kind = 'allow_once',
+            },
+        },
+    }
+    local fresh_permission = {
+        options = {
+            {
+                optionId = 'allow-fresh',
+                kind = 'allow_once',
+            },
+        },
+    }
+    local pending_permissions = {
+        {
+            local_session_id = current_session.id,
+            request_id = 'stale-request',
+            permission = stale_permission,
+            respond = function() end,
+        },
+        {
+            local_session_id = current_session.id,
+            request_id = 'fresh-request',
+            permission = fresh_permission,
+            respond = function() end,
+        },
+    }
+
+    local ctx = {
+        get_pending_permissions = function()
+            return pending_permissions
+        end,
+        is_live_generation = function()
+            return true
+        end,
+        active_request_session = function(request_permission)
+            if request_permission == stale_permission then
+                return nil
+            end
+
+            return current_session
+        end,
+        set_pending_permissions = function(next_pending)
+            retained = next_pending
+            pending_permissions = next_pending
+        end,
+        rerender = function(session_to_render)
+            rerendered = session_to_render
+        end,
+        cancel_pending_permission = function()
+            cancelled = true
+        end,
+        session = {
+            record_approval = function() end,
+        },
+    }
+
+    assert.has_error(function()
+        permission.select_pending_approval(ctx, current_session, 'stale-request:allow-stale')
+    end, 'ACP approval is no longer active')
+    assert.is_false(cancelled)
+    assert.are.equal(1, #retained)
+    assert.are.equal('fresh-request', retained[1].request_id)
+    assert.are.equal(current_session, rerendered)
 end)
 
 it('resolves inline approvals through ACP buffer-local keymaps', function()
@@ -477,7 +839,7 @@ it('keeps an inline approval visible when an invalid option is selected', functi
     assert.is_nil(response())
     assert.are.equal('call_dismiss', api.pending_approval().tool_call_id)
     assert.are.same({
-        'Approval needed for Delete file',
+        'Pending approvals (1) — active: Delete file',
         'g1 Allow once',
         'g2 Reject',
     }, approval_virtual_lines(bufnr))
@@ -621,7 +983,7 @@ it('switches back to the waiting session when an inline approval arrives for it'
     assert.are.equal(first.id, api.current_session().id)
     assert.are.equal('call_switch_back', api.pending_approval().tool_call_id)
     assert.are.same({
-        'Approval needed for Run command',
+        'Pending approvals (1) — active: Run command',
         'g1 Allow once',
         'g2 Reject',
     }, approval_virtual_lines(bufnr))
@@ -633,7 +995,7 @@ it('switches back to the waiting session when an inline approval arrives for it'
 end)
 
 it('reads file content from disk via fs/read_text_file', function()
-    local path = temp_path('disk-read.txt')
+    local path = vim.fn.getcwd() .. '/disk-read.txt'
     local handle = assert(io.open(path, 'wb'))
     assert(handle:write('alpha\nbeta\n'))
     handle:close()
@@ -676,7 +1038,7 @@ it('reads unsaved open-buffer content via fs/read_text_file', function()
 end)
 
 it('reads a limited line window via fs/read_text_file', function()
-    local path = temp_path('partial-read.txt')
+    local path = vim.fn.getcwd() .. '/partial-read.txt'
     local handle = assert(io.open(path, 'wb'))
     assert(handle:write('one\ntwo\nthree\n'))
     handle:close()
@@ -696,8 +1058,47 @@ it('reads a limited line window via fs/read_text_file', function()
     assert.are.equal('two\n', response.result.content)
 end)
 
+it('returns an empty snapshot when fs/read_text_file targets a missing file inside the workspace', function()
+    local path = vim.fn.getcwd() .. '/missing-read.txt'
+    os.remove(path)
+
+    api.open_chat()
+    api.set_prompt('read missing file')
+    api.submit_prompt()
+
+    local response = fake_client:emit_request('fs/read_text_file', {
+        sessionId = 'sess_123',
+        path = path,
+    })
+
+    assert.is_nil(response.error)
+    assert.are.equal('', response.result.content)
+end)
+
+it('rejects fs/read_text_file outside allowed roots', function()
+    local path = '/tmp/acp-fs-outside-read.txt'
+    local handle = assert(io.open(path, 'wb'))
+    assert(handle:write('outside\n'))
+    handle:close()
+
+    api.open_chat()
+    api.set_prompt('reject outside read')
+    api.submit_prompt()
+
+    local response = fake_client:emit_request('fs/read_text_file', {
+        sessionId = 'sess_123',
+        path = path,
+    })
+
+    os.remove(path)
+
+    assert.is_not_nil(response.error)
+    assert.is_true(response.error.message:match('allowed workspace root') ~= nil)
+end)
+
 it('writes file content via fs/write_text_file', function()
-    local path = temp_path('write-file.txt')
+    local path = vim.fn.getcwd() .. '/write-file.txt'
+    os.remove(path)
 
     api.open_chat()
     api.set_prompt('write a file')
@@ -740,7 +1141,67 @@ it('updates an open buffer via fs/write_text_file', function()
     assert.are.equal('after\nvalue\n', read_file(path))
 end)
 
-it('updates a loaded nomodifiable buffer via fs/write_text_file', function()
+it('records undo history for open-buffer fs/write_text_file updates', function()
+    local path = temp_path('write-open-buffer-undo.txt')
+    local handle = assert(io.open(path, 'wb'))
+    assert(handle:write('before\n'))
+    handle:close()
+
+    vim.cmd('edit ' .. vim.fn.fnameescape(path))
+    local file_buf = vim.api.nvim_get_current_buf()
+    vim.api.nvim_buf_set_lines(file_buf, 0, -1, false, { 'before', 'draft change' })
+
+    api.open_chat()
+    api.set_prompt('write through buffer and preserve undo')
+    api.submit_prompt()
+
+    local response = fake_client:emit_request('fs/write_text_file', {
+        sessionId = 'sess_123',
+        path = path,
+        content = 'after\nvalue\n',
+    })
+
+    assert.is_nil(response.error)
+    assert.are.same({ 'after', 'value' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
+    assert.is_false(vim.bo[file_buf].modified)
+
+    vim.cmd('undo')
+
+    assert.are.same({ 'before', 'draft change' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
+    assert.is_true(vim.bo[file_buf].modified)
+end)
+
+it('preserves prior unsaved buffer state in undo history for fs/write_text_file', function()
+    local path = temp_path('write-open-buffer-undo-preserve.txt')
+    local handle = assert(io.open(path, 'wb'))
+    assert(handle:write('alpha\nbeta\n'))
+    handle:close()
+
+    vim.cmd('edit ' .. vim.fn.fnameescape(path))
+    local file_buf = vim.api.nvim_get_current_buf()
+    vim.api.nvim_buf_set_lines(file_buf, 0, -1, false, { 'alpha', 'beta', 'user draft' })
+
+    api.open_chat()
+    api.set_prompt('write through buffer and preserve unsaved undo state')
+    api.submit_prompt()
+
+    local response = fake_client:emit_request('fs/write_text_file', {
+        sessionId = 'sess_123',
+        path = path,
+        content = 'alpha\nbeta updated\nuser draft\n',
+    })
+
+    assert.is_nil(response.error)
+    assert.are.same({ 'alpha', 'beta updated', 'user draft' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
+    assert.is_false(vim.bo[file_buf].modified)
+
+    vim.cmd('undo')
+
+    assert.are.same({ 'alpha', 'beta', 'user draft' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
+    assert.is_true(vim.bo[file_buf].modified)
+end)
+
+it('rejects fs/write_text_file before mutating disk when a loaded buffer cannot be synchronized', function()
     local path = temp_path('write-nomodifiable-buffer.txt')
     local handle = assert(io.open(path, 'wb'))
     assert(handle:write('before\n'))
@@ -760,11 +1221,57 @@ it('updates a loaded nomodifiable buffer via fs/write_text_file', function()
         content = 'after\nvalue\n',
     })
 
-    assert.is_nil(response.error)
-    assert.are.same({ 'after', 'value' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
+    assert.is_not_nil(response.error)
+    assert.are.same({ 'before' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
     assert.is_false(vim.bo[file_buf].modified)
     assert.is_false(vim.bo[file_buf].modifiable)
-    assert.are.equal('after\nvalue\n', read_file(path))
+    assert.are.equal('before\n', read_file(path))
+end)
+
+it('treats unchanged fs/write_text_file content as a no-op for a loaded non-modifiable buffer', function()
+    local path = temp_path('write-nomodifiable-buffer-noop.txt')
+    local handle = assert(io.open(path, 'wb'))
+    assert(handle:write('before\n'))
+    handle:close()
+
+    vim.cmd('edit ' .. vim.fn.fnameescape(path))
+    local file_buf = vim.api.nvim_get_current_buf()
+    vim.bo[file_buf].modifiable = false
+
+    api.open_chat()
+    api.set_prompt('noop write through nomodifiable buffer')
+    api.submit_prompt()
+
+    local response = fake_client:emit_request('fs/write_text_file', {
+        sessionId = 'sess_123',
+        path = path,
+        content = 'before\n',
+    })
+
+    assert.is_nil(response.error)
+    assert.are.same({ 'before' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
+    assert.is_false(vim.bo[file_buf].modified)
+    assert.is_false(vim.bo[file_buf].modifiable)
+    assert.are.equal('before\n', read_file(path))
+end)
+
+it('rejects fs/write_text_file outside allowed roots', function()
+    local path = '/tmp/acp-fs-outside-write.txt'
+    os.remove(path)
+
+    api.open_chat()
+    api.set_prompt('reject outside write')
+    api.submit_prompt()
+
+    local response = fake_client:emit_request('fs/write_text_file', {
+        sessionId = 'sess_123',
+        path = path,
+        content = 'outside\n',
+    })
+
+    assert.is_not_nil(response.error)
+    assert.is_true(response.error.message:match('allowed workspace root') ~= nil)
+    assert.is_false(vim.uv.fs_stat(path) ~= nil)
 end)
 
 it('creates a terminal and returns captured output', function()
@@ -1525,4 +2032,348 @@ it('keeps tool rows coherent after cancellation while still ignoring late chat u
     assert.is_false(vim.tbl_contains(lines, 'too late'))
     assert.is_true(vim.tbl_contains(lines, '✓ Run command'))
     assert.is_false(vim.tbl_contains(lines, '◔ Run command'))
+end)
+
+it('routes registered ACP extension requests through the extension registry', function()
+    api.open_chat()
+    api.set_prompt('extension request')
+    api.submit_prompt()
+
+    local seen = nil
+    require('acp.handlers').register_request('_vendor/echo', function(_, params, respond)
+        seen = vim.deepcopy(params)
+        respond({
+            echoed = params.value,
+        })
+    end)
+
+    local response = fake_client:emit_request('_vendor/echo', {
+        value = 'hello',
+    })
+
+    assert.are.same({
+        value = 'hello',
+    }, seen)
+    assert.are.same({
+        echoed = 'hello',
+    }, response.result)
+    assert.is_nil(response.error)
+end)
+
+it('routes registered ACP extension notifications through the extension registry', function()
+    api.open_chat()
+    api.set_prompt('extension notification')
+    api.submit_prompt()
+
+    local seen = nil
+    require('acp.handlers').register_notification('_vendor/did_echo', function(_, params)
+        seen = vim.deepcopy(params)
+    end)
+
+    fake_client:emit_notification('_vendor/did_echo', {
+        value = 'hello',
+    })
+
+    assert.are.same({
+        value = 'hello',
+    }, seen)
+end)
+
+it('rejects non-extension ACP method names for registry registration', function()
+    local handler_registry = require('acp.handlers')
+
+    assert.has_error(function()
+        handler_registry.register_request('session/update', function() end)
+    end, 'ACP extension methods must begin with `_`: session/update')
+    assert.has_error(function()
+        handler_registry.register_notification('terminal/create', function() end)
+    end, 'ACP extension methods must begin with `_`: terminal/create')
+end)
+
+it('returns method-not-found for unregistered ACP extension requests and ignores notifications', function()
+    api.open_chat()
+    api.set_prompt('unregistered extension')
+    api.submit_prompt()
+
+    local response = fake_client:emit_request('_vendor/missing', {
+        value = 'hello',
+    })
+
+    fake_client:emit_notification('_vendor/ignored', {
+        value = 'hello',
+    })
+
+    assert.is_nil(response.result)
+    assert.are.same({
+        code = -32601,
+        message = 'Unsupported ACP request: _vendor/missing',
+    }, response.error)
+end)
+
+it('returns controlled errors for non-string ACP method names', function()
+    api.open_chat()
+    api.set_prompt('invalid method type')
+    api.submit_prompt()
+
+    local active = fake_client:emit_request(false, {})
+
+    assert.is_nil(active.result)
+    assert.are.same({
+        code = -32601,
+        message = 'Unsupported ACP request: false',
+    }, active.error)
+
+    fake_client:resolve({
+        stopReason = 'cancelled',
+    })
+
+    local inactive = fake_client:emit_request(42, {})
+
+    assert.is_nil(inactive.result)
+    assert.are.same({
+        code = -32000,
+        message = 'ACP request is no longer active',
+    }, inactive.error)
+
+    fake_client:emit_notification({}, {
+        value = 'hello',
+    })
+end)
+
+it('clears registered ACP extension handlers when transport state is reset', function()
+    api.open_chat()
+    api.set_prompt('clear extension registry')
+    api.submit_prompt()
+
+    local count = 0
+    local handler_registry = require('acp.handlers')
+
+    handler_registry.register_request('_vendor/echo', function(_, _, respond)
+        count = count + 1
+        respond({
+            ok = true,
+        })
+    end)
+
+    local first = fake_client:emit_request('_vendor/echo', {})
+
+    fake_client:resolve({
+        stopReason = 'cancelled',
+    })
+    transport.clear()
+
+    local stale = fake_client:emit_request('_vendor/echo', {})
+    local second = handler_registry.extension_request_handler('_vendor/echo')
+
+    assert.are.equal(1, count)
+    assert.are.same({
+        ok = true,
+    }, first.result)
+    assert.is_nil(first.error)
+    assert.is_nil(stale.result)
+    assert.are.same({
+        code = -32000,
+        message = 'ACP request is no longer active',
+    }, stale.error)
+    assert.is_nil(second)
+end)
+
+it('prefers exact numeric option ids over numeric index parsing', function()
+    plugin.setup({
+        permission_strategy = 'select',
+    })
+    api.open_chat()
+    api.set_prompt('numeric option id')
+    api.submit_prompt()
+
+    local response = begin_permission_request({
+        sessionId = 'sess_123',
+        toolCall = {
+            toolCallId = 'call_numeric_id',
+            title = 'Run command',
+        },
+        options = {
+            {
+                optionId = 'zero',
+                name = 'Zero',
+                kind = 'reject_once',
+            },
+            {
+                optionId = '1',
+                name = 'One by id',
+                kind = 'allow_once',
+            },
+        },
+    })
+
+    api.select_approval_option('1')
+
+    assert.are.equal('selected', response().result.outcome.outcome)
+    assert.are.equal('1', response().result.outcome.optionId)
+end)
+
+it('keeps an existing pending approval when another request queues behind it', function()
+    plugin.setup({
+        permission_strategy = 'select',
+    })
+    local bufnr = api.open_chat()
+    api.set_prompt('first pending approval')
+    api.submit_prompt()
+
+    local first_response = begin_permission_request({
+        sessionId = 'sess_123',
+        toolCall = {
+            toolCallId = 'call_first_session',
+            title = 'First command',
+        },
+        options = {
+            {
+                optionId = 'allow-first',
+                name = 'Allow first',
+                kind = 'allow_once',
+            },
+        },
+    })
+
+    local second_response = begin_permission_request({
+        sessionId = 'sess_123',
+        toolCall = {
+            toolCallId = 'call_second_session',
+            title = 'Second command',
+        },
+        options = {
+            {
+                optionId = 'allow-second',
+                name = 'Allow second',
+                kind = 'allow_once',
+            },
+        },
+    })
+
+    assert.is_nil(first_response())
+    assert.are.equal('call_first_session', api.pending_approval().tool_call_id)
+    assert.are.equal(2, #api.pending_approvals())
+    assert.is_nil(second_response())
+end)
+
+it('renders pending approval options without embedding raw option ids in command guidance', function()
+    plugin.setup({
+        permission_strategy = 'select',
+    })
+    api.open_chat()
+    api.set_prompt('escaped approval display')
+    api.submit_prompt()
+
+    begin_permission_request({
+        sessionId = 'sess_123',
+        toolCall = {
+            toolCallId = 'call_escaped_display',
+            title = 'Run command',
+        },
+        options = {
+            {
+                optionId = '1`\n2',
+                name = 'Allow`\nnow',
+                kind = 'allow_`\nonce',
+            },
+        },
+    })
+
+    local lines = require('acp.status_message').pending_approval_lines(api.current_session(), api.pending_approval())
+    assert.are.equal(
+        [[Allow\` now [allow_\` once] (`1\` 2`)  ->  select with `g1`, `:ACPSelectApprovalOption 1`, or use the inline action]],
+        lines[5]
+    )
+end)
+
+it('resolves numeric command selections by index when option ids contain special characters', function()
+    plugin.setup({
+        permission_strategy = 'select',
+    })
+    api.open_chat()
+    api.set_prompt('escaped approval selection')
+    api.submit_prompt()
+
+    local response = begin_permission_request({
+        sessionId = 'sess_123',
+        toolCall = {
+            toolCallId = 'call_escaped_selection',
+            title = 'Run command',
+        },
+        options = {
+            {
+                optionId = '1`\n2',
+                name = 'Allow`\nnow',
+                kind = 'allow_once',
+            },
+            {
+                optionId = 'reject-once',
+                name = 'Reject',
+                kind = 'reject_once',
+            },
+        },
+    })
+
+    vim.cmd('ACPSelectApprovalOption 1')
+
+    assert.are.equal('selected', response().result.outcome.outcome)
+    assert.are.equal('1`\n2', response().result.outcome.optionId)
+end)
+
+it('resolves inline approval keymaps using request-qualified selections', function()
+    plugin.setup({
+        permission_strategy = 'select',
+    })
+    local bufnr = api.open_chat()
+    api.set_prompt('queued inline approval selection')
+    api.submit_prompt()
+
+    begin_permission_request({
+        sessionId = 'sess_123',
+        toolCall = {
+            toolCallId = 'call_first_inline',
+            title = 'First command',
+        },
+        options = {
+            {
+                optionId = 'allow-first',
+                name = 'Allow first',
+                kind = 'allow_once',
+            },
+        },
+    })
+
+    local second_response = begin_permission_request({
+        sessionId = 'sess_123',
+        toolCall = {
+            toolCallId = 'call_second_inline',
+            title = 'Second command',
+        },
+        options = {
+            {
+                optionId = 'allow-second',
+                name = 'Allow second',
+                kind = 'allow_once',
+            },
+        },
+    })
+
+    assert.is_true(vim.tbl_contains(approval_virtual_lines(bufnr), 'g1 Allow first'))
+
+    vim.api.nvim_feedkeys(vim.keycode('g1'), 'xt', false)
+
+    assert.is_true(vim.wait(1000, function()
+        return api.pending_approval() ~= nil and api.pending_approval().tool_call_id == 'call_second_inline'
+    end, 10))
+    assert.is_nil(second_response())
+    assert.are.equal('call_second_inline', api.pending_approval().tool_call_id)
+
+    vim.api.nvim_feedkeys(vim.keycode('g1'), 'xt', false)
+
+    assert.is_true(vim.wait(1000, function()
+        return second_response() ~= nil
+    end, 10))
+    assert.are.equal('selected', second_response().result.outcome.outcome)
+    assert.are.equal('allow-second', second_response().result.outcome.optionId)
+    assert.is_nil(api.pending_approval())
 end)

@@ -42,24 +42,56 @@ local function approval_ordinals()
         return {}
     end
 
+    if #approvals == 0 then
+        return {}
+    end
+
     return vim.tbl_map(function(approval)
         return tostring(approval.ordinal)
     end, approvals)
 end
 
 ---@return string[]
-local function pending_approval_option_ids()
-    local ok, pending_approval = pcall(function()
-        return api().pending_approval()
+local function pending_approval_option_selections()
+    local ok, pending_approvals = pcall(function()
+        return api().pending_approvals()
     end)
 
-    if not ok or pending_approval == nil then
+    if not ok or #pending_approvals == 0 then
         return {}
     end
 
-    return vim.tbl_map(function(option)
-        return option.optionId
-    end, pending_approval.options or {})
+    local selections = {}
+
+    for index, option in ipairs(pending_approvals[1].options or {}) do
+        table.insert(selections, tostring(index))
+        table.insert(selections, option.optionId)
+    end
+
+    return selections
+end
+
+---@return string[]
+local function pending_approval_option_selections_with_request()
+    local ok, pending_approvals = pcall(function()
+        return api().pending_approvals()
+    end)
+
+    if not ok then
+        return pending_approval_option_selections()
+    end
+
+    local ids = {}
+
+    for _, approval in ipairs(pending_approvals) do
+        for _, option in ipairs(approval.options or {}) do
+            table.insert(ids, string.format('%s:%s', approval.request_id, option.optionId))
+        end
+    end
+
+    vim.list_extend(ids, pending_approval_option_selections())
+
+    return ids
 end
 
 ---@param session_id? string
@@ -205,15 +237,15 @@ function M.ensure()
         local selection = vim.trim(opts.args)
 
         if selection == '' then
-            error('ACPSelectApprovalOption expects an approval option id')
+            error('ACPSelectApprovalOption expects an approval option index or id')
         end
 
         api().select_approval_option(selection)
     end, {
-        desc = 'Resolve the current inline ACP approval by option id',
+        desc = 'Resolve the current inline ACP approval by option index or id',
         nargs = 1,
         complete = function()
-            return pending_approval_option_ids()
+            return pending_approval_option_selections_with_request()
         end,
     })
 

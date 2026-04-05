@@ -337,6 +337,12 @@ function M.run(description, body_path)
             package.loaded['acp.hover_lsp'] = nil
             package.loaded['acp.input'] = nil
             package.loaded['acp.edit'] = nil
+            package.loaded['acp.handlers'] = nil
+            package.loaded['acp.handlers.fs'] = nil
+            package.loaded['acp.handlers.init'] = nil
+            package.loaded['acp.handlers.permission'] = nil
+            package.loaded['acp.handlers.session_notification'] = nil
+            package.loaded['acp.handlers.terminal'] = nil
             package.loaded['acp.model'] = nil
             package.loaded['acp.methods'] = nil
             package.loaded['acp.persistence'] = nil
@@ -347,6 +353,9 @@ function M.run(description, body_path)
             package.loaded['acp.surface'] = nil
             package.loaded['acp.terminal'] = nil
             package.loaded['acp.transport'] = nil
+            package.loaded['acp.transport.context'] = nil
+            package.loaded['acp.transport.init'] = nil
+            package.loaded['acp.transport.router'] = nil
             clear_terminal_manager_modules()
             vim.g.loaded_acp = nil
 

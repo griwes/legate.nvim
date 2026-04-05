@@ -40,7 +40,7 @@ function M.load()
         current_id = type(decoded.current_id) == 'string' and decoded.current_id or nil,
         next_ordinal = tonumber(decoded.next_ordinal) or 1,
         next_message_id = tonumber(decoded.next_message_id) or 1,
-        sessions = type(decoded.sessions) == 'table' and decoded.sessions or {},
+        sessions = vim.islist(decoded.sessions) and decoded.sessions or {},
     }
 end
 

@@ -33,10 +33,10 @@ local function ensure_state(bufnr)
     return state
 end
 
----@param option_id string
-local function select_option(option_id)
+---@param selection string
+local function select_option(selection)
     local ok, err = pcall(function()
-        require('acp.api').select_approval_option(option_id)
+        require('acp.api').select_approval_option(selection)
     end)
 
     if not ok then
@@ -55,13 +55,13 @@ local function select_index(bufnr, index)
         return
     end
 
-    local option_id = state.index_to_option[index]
+    local selection = state.index_to_option[index]
 
-    if option_id == nil then
+    if selection == nil then
         return
     end
 
-    select_option(option_id)
+    select_option(selection)
 end
 
 ---@param bufnr integer
@@ -120,8 +120,8 @@ end
 
 ---@param bufnr integer
 ---@param current_session acp.Session
----@param pending acp.PendingApproval?
-function M.apply(bufnr, current_session, pending)
+---@param pending_approvals acp.PendingApproval[]?
+function M.apply(bufnr, current_session, pending_approvals)
     attach(bufnr)
     vim.api.nvim_buf_clear_namespace(bufnr, namespace, 0, -1)
 
@@ -129,16 +129,19 @@ function M.apply(bufnr, current_session, pending)
     state.index_to_option = {}
     state.anchor_row = nil
 
-    if pending == nil then
+    pending_approvals = pending_approvals or {}
+
+    if #pending_approvals == 0 then
         return
     end
 
+    local active_pending = pending_approvals[1]
     local prompt_header_line = require('acp.input').prompt_header_line(bufnr)
     local anchor_row = math.max(prompt_header_line - 3, 0)
-    local virt_lines = require('acp.status_message').pending_approval_virtual_lines(current_session, pending)
+    local virt_lines = require('acp.status_message').pending_approval_virtual_lines(current_session, pending_approvals)
 
-    for index, option in ipairs(pending.options) do
-        state.index_to_option[index] = option.optionId
+    for index, option in ipairs(active_pending.options) do
+        state.index_to_option[index] = string.format('%s:%s', active_pending.request_id, option.optionId)
     end
 
     state.anchor_row = anchor_row

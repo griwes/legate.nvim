@@ -7,6 +7,7 @@ local sessions = {}
 local current_id = nil
 local next_ordinal = 1
 local next_message_id = 1
+local next_pending_approval_ordinal = 1
 local reconcile_status_messages
 
 ---@return integer
@@ -39,7 +40,7 @@ local function make_session()
         status = 'idle',
         messages = {},
         draft_prompt = '',
-        pending_approval = nil,
+        pending_approvals = {},
         plan_entries = {},
         available_commands = {},
         tool_calls = {},
@@ -50,6 +51,7 @@ local function make_session()
         turn_id = 0,
         created_at = timestamp,
         updated_at = timestamp,
+        transport_remote_id = nil,
     }
 end
 
@@ -137,8 +139,10 @@ local function persisted_session(current_session)
         snapshot.draft_prompt = snapshot.pending_prompt
     end
 
+    snapshot.transport_remote_id = nil
+
     snapshot.pending_prompt = nil
-    snapshot.pending_approval = nil
+    snapshot.pending_approvals = type(snapshot.pending_approvals) == 'table' and snapshot.pending_approvals or {}
 
     if snapshot.status == 'waiting' then
         snapshot.status = 'cancelled'
@@ -176,7 +180,7 @@ local function restore_session(item)
     end
 
     restored.pending_prompt = nil
-    restored.pending_approval = nil
+    restored.pending_approvals = type(restored.pending_approvals) == 'table' and restored.pending_approvals or {}
     restored.remote_id = type(restored.remote_id) == 'string' and restored.remote_id or nil
     restored.remote_sync_state = normalize_remote_sync_state(restored.remote_sync_state, restored.remote_id)
     restored.remote_sync_error = type(restored.remote_sync_error) == 'string'
@@ -189,6 +193,7 @@ local function restore_session(item)
     restored.approval_entries = type(restored.approval_entries) == 'table' and restored.approval_entries or {}
     restored.config_options = type(restored.config_options) == 'table' and restored.config_options or {}
     restored.turn_id = math.max(tonumber(restored.turn_id) or 0, 0)
+    restored.transport_remote_id = nil
     restored.created_at = tonumber(restored.created_at) or now()
     restored.updated_at = tonumber(restored.updated_at) or restored.created_at
 
@@ -337,7 +342,7 @@ end
 ---@return acp.Session?
 function M.pending_approval_session()
     for _, current_session in ipairs(M.list()) do
-        if current_session.pending_approval ~= nil then
+        if #(current_session.pending_approvals or {}) > 0 then
             return current_session
         end
     end
@@ -503,6 +508,18 @@ end
 ---@param remote_sync_error? string
 function M.set_remote_id(current_session, remote_id, remote_sync_state, remote_sync_error)
     current_session.remote_id = remote_id
+    current_session.transport_remote_id = remote_id
+    current_session.remote_sync_state = remote_sync_state or current_session.remote_sync_state
+    current_session.remote_sync_error = remote_sync_error
+    current_session.updated_at = now()
+end
+
+---@param current_session acp.Session
+---@param remote_id string?
+---@param remote_sync_state? acp.RemoteSyncState
+---@param remote_sync_error? string
+function M.set_transport_remote_id(current_session, remote_id, remote_sync_state, remote_sync_error)
+    current_session.transport_remote_id = remote_id
     current_session.remote_sync_state = remote_sync_state or current_session.remote_sync_state
     current_session.remote_sync_error = remote_sync_error
     current_session.updated_at = now()
@@ -514,9 +531,16 @@ end
 ---@param remote_sync_error? string
 function M.clear_remote_id(current_session, remote_sync_state, remote_sync_error)
     current_session.remote_id = nil
+    current_session.transport_remote_id = nil
     current_session.remote_sync_state = remote_sync_state or 'unbound'
     current_session.remote_sync_error = remote_sync_error
     current_session.updated_at = now()
+end
+
+---@param current_session acp.Session
+---@return string?
+function M.transport_remote_id(current_session)
+    return current_session.transport_remote_id
 end
 
 ---Store the current remote sync state on the local session.
@@ -708,7 +732,12 @@ function M.record_approval(current_session, permission, outcome, source)
     }
 
     table.insert(current_session.approval_entries, approval)
-    current_session.pending_approval = nil
+    for index, pending in ipairs(current_session.pending_approvals) do
+        if pending.request_id == permission.request_id then
+            table.remove(current_session.pending_approvals, index)
+            break
+        end
+    end
     upsert_status_message(
         current_session,
         'approval',
@@ -727,21 +756,24 @@ end
 function M.wait_for_approval(current_session, permission)
     local tool_call_id = permission.toolCall.toolCallId
 
-    if tool_call_id == nil then
-        return
+    if tool_call_id ~= nil then
+        M.update_tool_call(current_session, {
+            toolCallId = tool_call_id,
+            title = permission.toolCall.title,
+            status = 'waiting_for_approval',
+        })
     end
 
-    M.update_tool_call(current_session, {
-        toolCallId = tool_call_id,
-        title = permission.toolCall.title,
-        status = 'waiting_for_approval',
-    })
-
-    current_session.pending_approval = {
+    table.insert(current_session.pending_approvals, {
+        request_id = permission.request_id,
+        ordinal = next_pending_approval_ordinal,
         tool_call_id = tool_call_id,
         title = permission.toolCall.title or tool_call_id or 'Approval',
         options = vim.deepcopy(permission.options),
-    }
+        generation = permission.generation,
+        created_at = now(),
+    })
+    next_pending_approval_ordinal = next_pending_approval_ordinal + 1
     current_session.updated_at = now()
 end
 
@@ -812,7 +844,7 @@ function M.cancel(current_session)
 
     current_session.turn_id = current_session.turn_id + 1
     current_session.pending_prompt = nil
-    current_session.pending_approval = nil
+    current_session.pending_approvals = {}
     current_session.status = 'cancelled'
     current_session.updated_at = now()
 
@@ -822,7 +854,58 @@ end
 ---@param current_session acp.Session
 ---@return acp.PendingApproval?
 function M.pending_approval(current_session)
-    return current_session.pending_approval
+    return current_session.pending_approvals[1]
+end
+
+---@param current_session acp.Session
+---@return acp.PendingApproval[]
+function M.pending_approvals(current_session)
+    return current_session.pending_approvals
+end
+
+---@param current_session acp.Session
+---@param tool_call_id string?
+---@return acp.PendingApproval?
+function M.pending_approval_by_tool_call_id(current_session, tool_call_id)
+    if tool_call_id == nil then
+        return nil
+    end
+
+    for _, pending in ipairs(current_session.pending_approvals) do
+        if pending.tool_call_id == tool_call_id then
+            return pending
+        end
+    end
+
+    return nil
+end
+
+---@param current_session acp.Session
+---@param request_id string
+---@return acp.PendingApproval?
+function M.clear_pending_approval_by_request_id(current_session, request_id)
+    for index, pending in ipairs(current_session.pending_approvals or {}) do
+        if pending.request_id == request_id then
+            table.remove(current_session.pending_approvals, index)
+            current_session.updated_at = now()
+            return pending
+        end
+    end
+
+    return nil
+end
+
+---@param current_session acp.Session
+---@param tool_call_id string?
+---@return acp.PendingApproval?
+function M.clear_pending_approval(current_session, tool_call_id)
+    local pending = M.pending_approval_by_tool_call_id(current_session, tool_call_id)
+
+    if pending == nil then
+        return nil
+    end
+
+    return M.clear_pending_approval_by_request_id(current_session, pending.request_id)
 end
 
 reconcile_status_messages = function(current_session)
@@ -867,6 +950,7 @@ function M.clear()
     current_id = nil
     next_ordinal = 1
     next_message_id = 1
+    next_pending_approval_ordinal = 1
 end
 
 ---Return a persisted snapshot of all local ACP sessions.
@@ -892,10 +976,17 @@ end
 function M.restore(payload)
     M.clear()
 
+    local payload_sessions = payload.sessions
+
+    if payload_sessions ~= nil and not vim.islist(payload_sessions) then
+        vim.notify('ACP saved session file is corrupted: sessions must be a list', vim.log.levels.ERROR)
+        payload_sessions = {}
+    end
+
     local max_ordinal = 0
     local max_message_id = 0
 
-    for _, item in ipairs(payload.sessions or {}) do
+    for _, item in ipairs(payload_sessions or {}) do
         if type(item) == 'table' then
             local restored = restore_session(item)
 
@@ -926,6 +1017,14 @@ function M.restore(payload)
 
     next_ordinal = math.max(tonumber(payload.next_ordinal) or 1, max_ordinal + 1)
     next_message_id = math.max(tonumber(payload.next_message_id) or 1, max_message_id + 1)
+    next_pending_approval_ordinal = 1
+
+    for _, current_session in ipairs(ordered) do
+        for _, pending in ipairs(current_session.pending_approvals or {}) do
+            next_pending_approval_ordinal =
+                math.max(next_pending_approval_ordinal, (tonumber(pending.ordinal) or 0) + 1)
+        end
+    end
 
     return ordered
 end

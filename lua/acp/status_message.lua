@@ -80,8 +80,29 @@ end
 
 ---@param location acp.ToolCallLocation
 ---@return string
+local function inline_code(text)
+    text = text:gsub('[\r\n]+', ' ')
+    local longest_run = 0
+
+    for run in text:gmatch('`+') do
+        if #run > longest_run then
+            longest_run = #run
+        end
+    end
+
+    local delimiter = ('`'):rep(longest_run + 1)
+
+    if longest_run == 0 then
+        return string.format('`%s`', text)
+    end
+
+    return string.format('%s %s %s', delimiter, text, delimiter)
+end
+
+---@param location acp.ToolCallLocation
+---@return string
 local function markdown_location(location)
-    return string.format('`%s`', plain_location(location))
+    return inline_code(plain_location(location))
 end
 
 ---@param value any
@@ -100,10 +121,14 @@ local function non_empty_string(value)
     return trimmed
 end
 
----@param text string
----@return string
-local function inline_code(text)
-    return string.format('`%s`', text)
+---@param text string?
+---@return string?
+local function single_line_text(text)
+    if text == nil then
+        return nil
+    end
+
+    return text:gsub('[\r\n]+', ' ')
 end
 
 ---@param argument string
@@ -126,7 +151,7 @@ local function parsed_command(raw_input)
     local parsed = raw_input.parsed_cmd or raw_input.parsedCmd or raw_input.parsed_command or raw_input.parsedCommand
 
     if type(parsed) == 'string' then
-        return non_empty_string(parsed)
+        return single_line_text(non_empty_string(parsed))
     end
 
     if type(parsed) == 'table' then
@@ -151,9 +176,11 @@ local function parsed_command(raw_input)
                 shell_segment(command),
             }
 
-            for _, arg in ipairs(parsed.args or {}) do
-                if type(arg) == 'string' and arg ~= '' then
-                    table.insert(parts, shell_segment(arg))
+            if vim.islist(parsed.args) then
+                for _, arg in ipairs(parsed.args) do
+                    if type(arg) == 'string' and arg ~= '' then
+                        table.insert(parts, shell_segment(arg))
+                    end
                 end
             end
 
@@ -368,10 +395,16 @@ end
 ---@return acp.StatusSummary
 local function build_summary(icon, state, text)
     local icon_start = 0
-    local icon_at = text:find(icon, 1, true)
+    local prefix = text:match('^(%-?%s*)' .. vim.pesc(icon) .. '%s')
 
-    if icon_at ~= nil then
-        icon_start = icon_at - 1
+    if prefix ~= nil then
+        icon_start = #prefix
+    else
+        local icon_at = text:find(icon, 1, true)
+
+        if icon_at ~= nil then
+            icon_start = icon_at - 1
+        end
     end
 
     return {
@@ -431,11 +464,13 @@ function M.approval_status_text(approval)
         and approval.selected_kind ~= nil
         and approval.selected_option_id ~= nil
     then
+        local selected_option_name = single_line_text(approval.selected_option_name)
+
         table.insert(
             lines,
             string.format(
                 'Selected Option: %s [%s] (`%s`)',
-                approval.selected_option_name,
+                selected_option_name,
                 approval.selected_kind,
                 approval.selected_option_id
             )
@@ -446,7 +481,10 @@ function M.approval_status_text(approval)
         local option_lines = {}
 
         for _, option in ipairs(approval.options) do
-            table.insert(option_lines, string.format('%s [%s] (`%s`)', option.name, option.kind, option.optionId))
+            table.insert(
+                option_lines,
+                string.format('%s [%s] (`%s`)', single_line_text(option.name), option.kind, option.optionId)
+            )
         end
 
         table.insert(lines, string.format('Options: %s', table.concat(option_lines, ', ')))
@@ -519,9 +557,6 @@ function M.approval_summary_line(approval, related_tool)
     return M.approval_summary(approval, related_tool).text
 end
 
----@param current_session acp.Session
----@param stream_key string?
----@return acp.ToolCallState?
 local function tool_call_by_stream_key(current_session, stream_key)
     if stream_key == nil then
         return nil
@@ -534,6 +569,64 @@ local function tool_call_by_stream_key(current_session, stream_key)
     end
 
     return nil
+end
+
+---@param value any
+---@return string
+local function inline_code_text(value)
+    local text = tostring(value or '')
+    text = text:gsub('[\r\n]+', ' ')
+    text = text:gsub('`', '\\`')
+    return text
+end
+
+local MAX_INLINE_APPROVAL_HINT_INDEX = 9
+
+---@param option acp.PermissionOption
+---@param index integer
+---@return string
+local function pending_approval_option_line(option, index)
+    local option_name = inline_code_text(option.name)
+    local option_kind = inline_code_text(option.kind)
+    local option_id = inline_code_text(option.optionId)
+
+    local selection_hint = 'or use the inline action'
+
+    if index <= MAX_INLINE_APPROVAL_HINT_INDEX then
+        selection_hint =
+            string.format('select with `g%d`, `:ACPSelectApprovalOption %d`, or use the inline action', index, index)
+    else
+        selection_hint = string.format('select with `:ACPSelectApprovalOption %d` or use the inline action', index)
+    end
+
+    return string.format('%s [%s] (`%s`)  ->  %s', option_name, option_kind, option_id, selection_hint)
+end
+
+---@param current_session acp.Session
+---@param pending_approval acp.PendingApproval
+---@return string[]
+function M.pending_approval_lines(current_session, pending_approval)
+    local related_tool = nil
+
+    for _, tool_call in ipairs(current_session.tool_calls or {}) do
+        if tool_call.tool_call_id == pending_approval.tool_call_id then
+            related_tool = tool_call
+            break
+        end
+    end
+
+    local lines = {
+        '## Approval Needed',
+        '',
+        string.format('? %s', approval_subject(pending_approval.title, related_tool)),
+        '',
+    }
+
+    for index, option in ipairs(pending_approval.options) do
+        table.insert(lines, pending_approval_option_line(option, index))
+    end
+
+    return lines
 end
 
 ---@param current_session acp.Session
@@ -574,20 +667,59 @@ end
 ---@param index integer
 ---@return string
 local function pending_approval_overlay_option(option, index)
-    return string.format('g%d %s', index, option.name)
+    return string.format('g%d %s', index, single_line_text(option.name))
+end
+
+---@param total_options integer
+---@return string?
+local function pending_approval_overlay_more_hint(total_options)
+    if total_options <= MAX_INLINE_APPROVAL_HINT_INDEX then
+        return nil
+    end
+
+    if total_options == MAX_INLINE_APPROVAL_HINT_INDEX + 1 then
+        return string.format('… use :ACPSelectApprovalOption %d', total_options)
+    end
+
+    return string.format('… use :ACPSelectApprovalOption 10-%d', total_options)
 end
 
 ---@param current_session acp.Session
----@param pending_approval acp.PendingApproval
+---@param pending_approvals acp.PendingApproval[]
 ---@return string[]
-function M.pending_approval_virtual_text(current_session, pending_approval)
+function M.pending_approval_virtual_text(current_session, pending_approvals)
+    local pending_approval = pending_approvals[1]
     local related_tool = tool_call_by_id(current_session, pending_approval.tool_call_id)
     local lines = {
-        string.format('Approval needed for %s', approval_subject(pending_approval.title, related_tool)),
+        string.format(
+            'Pending approvals (%d) — active: %s',
+            #pending_approvals,
+            approval_subject(pending_approval.title, related_tool)
+        ),
     }
 
-    for index, option in ipairs(pending_approval.options) do
-        table.insert(lines, pending_approval_overlay_option(option, index))
+    for index = 1, math.min(#pending_approval.options, MAX_INLINE_APPROVAL_HINT_INDEX) do
+        local option = pending_approval.options[index]
+        local overlay_option = pending_approval_overlay_option(option, index)
+
+        if overlay_option ~= nil then
+            table.insert(lines, overlay_option)
+        end
+    end
+
+    local more_hint = pending_approval_overlay_more_hint(#pending_approval.options)
+
+    if more_hint ~= nil then
+        table.insert(lines, more_hint)
+    end
+
+    for index = 2, #pending_approvals do
+        local queued = pending_approvals[index]
+        local queued_tool = tool_call_by_id(current_session, queued.tool_call_id)
+        table.insert(
+            lines,
+            string.format('Queued [%d] %s', queued.ordinal, approval_subject(queued.title, queued_tool))
+        )
     end
 
     return lines
@@ -595,11 +727,37 @@ end
 
 ---@param current_session acp.Session
 ---@param pending_approval acp.PendingApproval
+---@return string
+function M.pending_approval_overlay_text(current_session, pending_approval)
+    local related_tool = tool_call_by_id(current_session, pending_approval.tool_call_id)
+    local options = {}
+
+    for index = 1, math.min(#pending_approval.options, MAX_INLINE_APPROVAL_HINT_INDEX) do
+        local option = pending_approval.options[index]
+        local overlay_option = pending_approval_overlay_option(option, index)
+
+        if overlay_option ~= nil then
+            table.insert(options, overlay_option)
+        end
+    end
+
+    local more_hint = pending_approval_overlay_more_hint(#pending_approval.options)
+
+    if more_hint ~= nil then
+        table.insert(options, more_hint)
+    end
+
+    local suffix = #options > 0 and string.format(': %s', table.concat(options, ', ')) or ''
+    return string.format('Approval needed for %s%s', approval_subject(pending_approval.title, related_tool), suffix)
+end
+
+---@param current_session acp.Session
+---@param pending_approvals acp.PendingApproval[]
 ---@return table[]
-function M.pending_approval_virtual_lines(current_session, pending_approval)
+function M.pending_approval_virtual_lines(current_session, pending_approvals)
     local lines = {}
 
-    for _, text in ipairs(M.pending_approval_virtual_text(current_session, pending_approval)) do
+    for _, text in ipairs(M.pending_approval_virtual_text(current_session, pending_approvals)) do
         table.insert(lines, {
             { text, 'Comment' },
         })
@@ -743,13 +901,15 @@ local function approval_hover_lines_for_session(current_session, approval)
         and approval.selected_kind ~= nil
         and approval.selected_option_id ~= nil
     then
+        local selected_option_name = single_line_text(approval.selected_option_name)
+
         table.insert(
             lines,
             detail_bullet(
                 'Selected',
                 string.format(
                     '%s [%s] (`%s`)',
-                    approval.selected_option_name,
+                    selected_option_name,
                     approval.selected_kind,
                     approval.selected_option_id
                 )
@@ -762,7 +922,10 @@ local function approval_hover_lines_for_session(current_session, approval)
         table.insert(lines, '#### Options')
 
         for _, option in ipairs(approval.options) do
-            table.insert(lines, string.format('- %s [%s] (`%s`)', option.name, option.kind, option.optionId))
+            table.insert(
+                lines,
+                string.format('- %s [%s] (`%s`)', single_line_text(option.name), option.kind, option.optionId)
+            )
         end
     end
 

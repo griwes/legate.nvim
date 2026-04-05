@@ -32,7 +32,11 @@ local function available_commands()
         local ok, api = pcall(require, 'acp.api')
 
         if ok then
-            pcall(api.slash_commands, current_session.id)
+            local command_ok, commands = pcall(api.slash_commands, current_session.id)
+
+            if command_ok and type(commands) == 'table' then
+                return commands
+            end
         end
     end
 
@@ -47,8 +51,13 @@ local function slash_start_column(bufnr)
     end
 
     local cursor = vim.api.nvim_win_get_cursor(0)
+    local ok, prompt_start_line = pcall(input.prompt_start_line, bufnr)
 
-    if cursor[1] < input.prompt_start_line(bufnr) then
+    if not ok or type(prompt_start_line) ~= 'number' then
+        return -3, nil
+    end
+
+    if cursor[1] < prompt_start_line then
         return -3, nil
     end
 

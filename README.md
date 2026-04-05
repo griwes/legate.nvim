@@ -76,7 +76,7 @@ Example local `lazy.nvim` spec:
 - when `persist_sessions = true`, ACP writes local session state on `VimLeavePre`; `restore_sessions_on_setup = true` opts into restoring that local state during `setup()`
 - prompt execution is still serialized globally for now; multiple local sessions are supported, but only one live prompt turn runs at a time
 - this transport slice has been smoke-tested against `codex-acp 0.11.1` using the `chatgpt` auth method
-- a repo-owned opt-in live restore smoke now proves that a persisted local ACP session can be restored in a fresh Neovim process, explicitly rebound through `session/load`, and used for a successful follow-up turn against real `codex-acp`
+- a repo-owned opt-in live restore smoke now proves that a persisted local ACP session can be restored in a fresh Neovim process, explicitly rebound through `session/load`, and also that a follow-up without explicit load does not auto-resume the old remote
 - a second repo-owned opt-in live smoke now proves `load_failed` recovery against real `codex-acp`: retrying the recorded remote id fails closed as expected, `ACPRebindSession` creates a fresh remote session, and a follow-up prompt succeeds on that rebound session
 - a repo-owned opt-in live terminal-selection probe now requires an observed terminal or ACP tool-call path and records whether `codex-acp` actually used ACP `terminal/*` plus which ACP tool-call kinds were observed instead
 - current local probe runs with both `terminal_backend = 'native'` and `terminal_backend = 'terminal_manager'` still chose an `execute` tool call and made zero ACP `terminal/*` requests

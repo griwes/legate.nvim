@@ -162,6 +162,40 @@ local ok, err = xpcall(function()
             transcript = transcript_text(current_session),
             saved_session_count = #payload.sessions,
         })
+    elseif phase == 'restore_without_load' then
+        local phase_one = read_json(env('ACP_LIVE_PHASE_ONE_RESULT_FILE'))
+        local phase_two_token = 'ACP_RESTORE_PHASE_TWO_NO_LOAD_OK'
+
+        local restored = api.restore_sessions()
+
+        assert(#restored > 0, 'restore_sessions returned no sessions')
+
+        local current_session = api.current_session()
+
+        assert(current_session.id == phase_one.local_id, 'restored local session id mismatch')
+        assert(current_session.remote_id == phase_one.remote_id, 'restored remote_id mismatch')
+        assert(
+            current_session.remote_sync_state == phase_one.remote_sync_state,
+            'restored remote sync state did not match the persisted snapshot'
+        )
+
+        api.set_prompt(string.format('Reply with exactly %s and no other text.', phase_two_token))
+        current_session = api.submit_prompt()
+
+        wait_for_turn_completion(current_session, prompt_timeout_ms)
+        assert_transcript_contains(current_session, phase_two_token)
+
+        local payload = api.save_sessions()
+
+        write_json(result_file, {
+            phase = phase,
+            local_id = current_session.id,
+            remote_id = current_session.remote_id,
+            remote_sync_state = current_session.remote_sync_state,
+            message_count = #current_session.messages,
+            transcript = transcript_text(current_session),
+            saved_session_count = #payload.sessions,
+        })
     else
         error(string.format('Unsupported ACP live smoke phase: %s', phase))
     end

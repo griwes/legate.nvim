@@ -73,6 +73,7 @@ local paths = {
     session_state_file = vim.fs.joinpath(temp_root, 'sessions.json'),
     save_result = vim.fs.joinpath(temp_root, 'phase-save.json'),
     restore_result = vim.fs.joinpath(temp_root, 'phase-restore.json'),
+    restore_without_load_result = vim.fs.joinpath(temp_root, 'phase-restore-without-load.json'),
 }
 
 local base_env = vim.fn.environ()
@@ -91,13 +92,23 @@ end
 local ok, err = xpcall(function()
     local saved = run_phase(repo_root, base_env, 'save', paths)
     local restored = run_phase(repo_root, base_env, 'restore', paths)
+    local restored_without_load = run_phase(repo_root, base_env, 'restore_without_load', paths)
 
     assert(saved.local_id == restored.local_id, 'local ACP session id changed across restore')
+    assert(saved.local_id == restored_without_load.local_id, 'local ACP session id changed across restore-no-load')
     assert(saved.remote_id == restored.remote_id, 'remote ACP session id changed across restore/reload')
     assert(restored.remote_sync_state == 'loaded', 'restored ACP session was not explicitly reloaded')
     assert(
         restored.message_count > saved.message_count,
         'restored ACP session did not record a follow-up turn after explicit reload'
+    )
+    assert(
+        restored_without_load.remote_sync_state == 'created',
+        'restored ACP session was implicitly resumed without explicit reload'
+    )
+    assert(
+        restored_without_load.message_count > saved.message_count,
+        'restored ACP session did not record a follow-up turn after no-load follow-up'
     )
     assert(
         restored.transcript:find('ACP_RESTORE_PHASE_ONE_OK', 1, true) ~= nil,
@@ -107,6 +118,14 @@ local ok, err = xpcall(function()
         restored.transcript:find('ACP_RESTORE_PHASE_TWO_OK', 1, true) ~= nil,
         'restored transcript did not capture the follow-up assistant response'
     )
+    assert(
+        restored_without_load.transcript:find('ACP_RESTORE_PHASE_ONE_OK', 1, true) ~= nil,
+        'no-load restored transcript lost the phase-one assistant response'
+    )
+    assert(
+        restored_without_load.transcript:find('ACP_RESTORE_PHASE_TWO_NO_LOAD_OK', 1, true) ~= nil,
+        'no-load restored transcript did not capture the follow-up assistant response'
+    )
 
     print(vim.json.encode({
         outcome = 'success',
@@ -114,7 +133,9 @@ local ok, err = xpcall(function()
         remote_id = restored.remote_id,
         saved_message_count = saved.message_count,
         restored_message_count = restored.message_count,
+        restored_without_load_message_count = restored_without_load.message_count,
         restored_sync_state = restored.remote_sync_state,
+        restored_without_load_sync_state = restored_without_load.remote_sync_state,
     }))
 end, debug.traceback)
 

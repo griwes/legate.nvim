@@ -29,7 +29,7 @@ local function widths(rows)
 
     for _, row in ipairs(rows) do
         for index, value in ipairs(row) do
-            measured[index] = math.max(measured[index] or 0, #value)
+            measured[index] = math.max(measured[index] or 0, #text(value))
         end
     end
 

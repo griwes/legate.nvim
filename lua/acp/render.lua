@@ -9,6 +9,28 @@ local surface = require('acp.surface')
 ---@class acp.RenderModule
 local M = {}
 
+local REMOTE_SYNC_ERROR_MAX_LENGTH = 200
+
+---@param value string?
+---@return string?
+local function normalize_remote_sync_error(value)
+    if type(value) ~= 'string' then
+        return nil
+    end
+
+    local normalized = vim.trim(value:gsub('[\r\t\n]+', ' '))
+
+    if normalized == '' then
+        return nil
+    end
+
+    if #normalized <= REMOTE_SYNC_ERROR_MAX_LENGTH then
+        return normalized
+    end
+
+    return normalized:sub(1, REMOTE_SYNC_ERROR_MAX_LENGTH - 3) .. '...'
+end
+
 ---@param entries acp.PlanEntry[]
 ---@return string[]
 local function format_plan(entries)
@@ -107,8 +129,15 @@ local function build_layout(current_session, prompt)
 
     local lines = layout.lines
 
-    if current_session.remote_sync_error ~= nil then
-        table.insert(lines, string.format('> Remote Sync Error: `%s`', current_session.remote_sync_error))
+    local normalized_error = current_session.remote_sync_error ~= nil
+        and normalize_remote_sync_error(current_session.remote_sync_error)
+        or nil
+
+    if normalized_error ~= nil then
+        table.insert(
+            lines,
+            string.format('> Remote Sync Error: `%s`', normalized_error)
+        )
     end
 
     if current_session.remote_sync_state == 'load_failed' then
@@ -118,7 +147,7 @@ local function build_layout(current_session, prompt)
         )
     end
 
-    if current_session.remote_sync_error ~= nil or current_session.remote_sync_state == 'load_failed' then
+    if normalized_error ~= nil or current_session.remote_sync_state == 'load_failed' then
         table.insert(lines, '')
     end
 
@@ -139,7 +168,7 @@ local function build_layout(current_session, prompt)
                 local summary = status_message.summary(current_session, message)
 
                 table.insert(layout.status_rows, {
-                    row = #lines,
+                    row = #lines + 1,
                     message_id = message.id,
                     summary = summary,
                 })
@@ -231,7 +260,7 @@ function M.render(session, prompt)
     input.set_anchor(bufnr, prompt_header_row)
     hover.set_status_rows(bufnr, layout.status_rows)
     surface.decorate(bufnr, session, layout.status_rows)
-    approval_ui.apply(bufnr, session, session.pending_approval)
+    approval_ui.apply(bufnr, session, session.pending_approvals or {})
     surface.restore_window_states(bufnr, window_states)
 
     local ok, edit = pcall(require, 'acp.edit')

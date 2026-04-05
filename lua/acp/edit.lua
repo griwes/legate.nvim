@@ -42,6 +42,10 @@ local function can_edit_prompt(bufnr)
         return false
     end
 
+    if input.anchor_row(bufnr) == nil then
+        return false
+    end
+
     return vim.api.nvim_win_get_cursor(0)[1] >= input.prompt_start_line(bufnr)
 end
 
@@ -154,8 +158,12 @@ function M.attach(bufnr)
     attached_buffers[bufnr] = true
 
     vim.api.nvim_buf_attach(bufnr, false, {
-        on_lines = function(_, changed_bufnr, _, firstline)
-            handle_change(changed_bufnr, firstline)
+        on_lines = function(_, callback_bufnr, _, firstline, _, _, _)
+            if callback_bufnr ~= bufnr then
+                return
+            end
+
+            handle_change(callback_bufnr, firstline)
         end,
         on_detach = function(_, changed_bufnr)
             attached_buffers[changed_bufnr] = nil
