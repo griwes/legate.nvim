@@ -247,25 +247,53 @@ function M.render(session, prompt)
     end
 
     local bufnr = buffer.ensure()
+
+    if bufnr == nil or bufnr == 0 or not vim.api.nvim_buf_is_valid(bufnr) then
+        return 0
+    end
+
     local window_states = surface.capture_window_states(bufnr)
     local prompt_body = prompt_lines(prompt)
     local layout = build_layout(session, prompt)
     local lines = layout.lines
     local prompt_header_row = #lines - #prompt_body - 2
 
+    local function buffer_is_valid()
+        return vim.api.nvim_buf_is_valid(bufnr)
+    end
+
+    if not buffer_is_valid() then
+        return 0
+    end
+
     buffer.set_session_name(bufnr, session)
     buffer.with_mutation(bufnr, function()
         replace_changed_range(bufnr, lines)
     end)
-    input.set_anchor(bufnr, prompt_header_row)
-    hover.set_status_rows(bufnr, layout.status_rows)
-    surface.decorate(bufnr, session, layout.status_rows)
-    approval_ui.apply(bufnr, session, session.pending_approvals or {})
-    surface.restore_window_states(bufnr, window_states)
+
+    if buffer_is_valid() then
+        input.set_anchor(bufnr, prompt_header_row)
+    end
+
+    if buffer_is_valid() then
+        hover.set_status_rows(bufnr, layout.status_rows)
+    end
+
+    if buffer_is_valid() then
+        surface.decorate(bufnr, session, layout.status_rows)
+    end
+
+    if buffer_is_valid() then
+        approval_ui.apply(bufnr, session, session.pending_approvals or {})
+    end
+
+    if buffer_is_valid() then
+        surface.restore_window_states(bufnr, window_states)
+    end
 
     local ok, edit = pcall(require, 'acp.edit')
 
-    if ok and type(edit.refresh) == 'function' then
+    if buffer_is_valid() and ok and type(edit.refresh) == 'function' then
         edit.refresh(bufnr)
     end
 

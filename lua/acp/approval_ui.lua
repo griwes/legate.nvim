@@ -12,6 +12,14 @@ local states = {}
 ---@type table<integer, boolean>
 local attached = {}
 
+local jump_mapping = ']a'
+
+---@param bufnr integer?
+---@return boolean
+local function valid_buffer(bufnr)
+    return type(bufnr) == 'number' and bufnr > 0 and vim.api.nvim_buf_is_valid(bufnr)
+end
+
 ---@param index integer
 ---@return string
 local function option_mapping(index)
@@ -92,7 +100,7 @@ local function attach(bufnr)
         end,
     })
 
-    vim.keymap.set('n', ']a', function()
+    vim.keymap.set('n', jump_mapping, function()
         jump_to_first_option(bufnr)
     end, {
         buffer = bufnr,
@@ -113,15 +121,29 @@ end
 
 ---@param bufnr integer
 function M.clear(bufnr)
+    if not valid_buffer(bufnr) then
+        states[bufnr] = nil
+        attached[bufnr] = nil
+        return
+    end
+
     vim.api.nvim_buf_clear_namespace(bufnr, namespace, 0, -1)
-    attached[bufnr] = nil
-    states[bufnr] = nil
+
+    local state = states[bufnr]
+    if state ~= nil then
+        state.index_to_option = {}
+        state.anchor_row = nil
+    end
 end
 
 ---@param bufnr integer
 ---@param current_session acp.Session
 ---@param pending_approvals acp.PendingApproval[]?
 function M.apply(bufnr, current_session, pending_approvals)
+    if not valid_buffer(bufnr) then
+        return
+    end
+
     attach(bufnr)
     vim.api.nvim_buf_clear_namespace(bufnr, namespace, 0, -1)
 

@@ -52,6 +52,807 @@ local function surface_virtual_texts(bufnr)
     end, marks)
 end
 
+it('warns when enable_mcp_nvim is enabled without mcp.nvim installed', function()
+    local original_notify = vim.notify
+    local notifications = {}
+
+    package.loaded['mcp'] = nil
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_servers = {
+            {
+                name = 'custom',
+                type = 'stdio',
+                command = 'custom-mcp',
+            },
+        },
+    })
+
+    vim.notify = function(message, level)
+        table.insert(notifications, {
+            message = message,
+            level = level,
+        })
+    end
+
+    local ok, err = xpcall(function()
+        package.loaded['acp.mcp_runtime'] = nil
+        local runtime = require('acp.mcp_runtime')
+        local servers = runtime.effective_servers({ passive = true })
+
+        assert.are.same({
+            {
+                name = 'custom',
+                type = 'stdio',
+                command = 'custom-mcp',
+            },
+        }, servers)
+        assert.are.same({
+            {
+                message = 'ACP enable_mcp_nvim is enabled, but mcp.nvim is not installed on the runtimepath',
+                level = vim.log.levels.WARN,
+            },
+        }, notifications)
+    end, debug.traceback)
+
+    vim.notify = original_notify
+
+    if not ok then
+        error(err)
+    end
+end)
+
+it('injects the stdio neovim server and replaces existing neovim entries', function()
+    local original_mcp = package.loaded['mcp']
+
+    package.loaded['mcp'] = {
+        start_all = function()
+            return true
+        end,
+        http_endpoint = function()
+            return nil
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+                env = { FOO = 'bar' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_servers = {
+            {
+                name = 'custom',
+                type = 'stdio',
+                command = 'custom-mcp',
+            },
+            {
+                name = 'acp.nvim',
+                type = 'stdio',
+                command = 'old-acp',
+            },
+        },
+    })
+
+    package.loaded['acp.mcp_runtime'] = nil
+    local runtime = require('acp.mcp_runtime')
+    local servers = runtime.effective_servers({ passive = true })
+
+    package.loaded['mcp'] = original_mcp
+
+    assert.are.same({
+        {
+            name = 'custom',
+            type = 'stdio',
+            command = 'custom-mcp',
+        },
+        {
+            name = 'acp.nvim',
+            type = 'stdio',
+            command = 'nvim-mcp',
+            args = { '--stdio' },
+            env = { FOO = 'bar' },
+        },
+    }, servers)
+end)
+
+it('injects the http ACP-managed server without replacing user-defined aliases', function()
+    local original_mcp = package.loaded['mcp']
+
+    package.loaded['mcp'] = {
+        start_all = function()
+            return true
+        end,
+        http_endpoint = function()
+            return {
+                url = 'http://127.0.0.1:7777/mcp',
+            }
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_servers = {
+            {
+                name = 'mcp.nvim',
+                type = 'stdio',
+                command = 'old-mcp',
+            },
+            {
+                name = 'custom',
+                type = 'stdio',
+                command = 'custom-mcp',
+            },
+        },
+    })
+
+    package.loaded['acp.mcp_runtime'] = nil
+    local runtime = require('acp.mcp_runtime')
+    local servers = runtime.effective_servers()
+
+    package.loaded['mcp'] = original_mcp
+
+    assert.are.same({
+        {
+            name = 'acp.nvim',
+            type = 'http',
+            url = 'http://127.0.0.1:7777/mcp',
+        },
+        {
+            name = 'mcp.nvim',
+            type = 'stdio',
+            command = 'old-mcp',
+        },
+        {
+            name = 'custom',
+            type = 'stdio',
+            command = 'custom-mcp',
+        },
+    }, servers)
+end)
+
+it('deduplicates only ACP-managed injected servers', function()
+    local original_mcp = package.loaded['mcp']
+
+    package.loaded['mcp'] = {
+        start_all = function()
+            return true
+        end,
+        http_endpoint = function()
+            return nil
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+                env = { FOO = 'bar' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_servers = {
+            {
+                name = 'acp.nvim',
+                type = 'stdio',
+                command = 'old-acp',
+            },
+            {
+                name = 'custom',
+                type = 'stdio',
+                command = 'custom-mcp',
+            },
+            {
+                name = 'mcp.nvim',
+                type = 'stdio',
+                command = 'old-mcp',
+            },
+            {
+                name = 'neovim',
+                type = 'stdio',
+                command = 'old-neovim',
+            },
+        },
+    })
+
+    package.loaded['acp.mcp_runtime'] = nil
+    local runtime = require('acp.mcp_runtime')
+    local servers = runtime.effective_servers()
+
+    package.loaded['mcp'] = original_mcp
+
+    assert.are.same({
+        {
+            name = 'acp.nvim',
+            type = 'stdio',
+            command = 'nvim-mcp',
+            args = { '--stdio' },
+            env = { FOO = 'bar' },
+        },
+        {
+            name = 'custom',
+            type = 'stdio',
+            command = 'custom-mcp',
+        },
+        {
+            name = 'mcp.nvim',
+            type = 'stdio',
+            command = 'old-mcp',
+        },
+    }, servers)
+end)
+
+it('replaces legacy neovim MCP server entries with the managed ACP server', function()
+    local original_mcp = package.loaded['mcp']
+
+    package.loaded['mcp'] = {
+        start_all = function()
+            return true
+        end,
+        http_endpoint = function()
+            return nil
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+                env = { FOO = 'bar' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_servers = {
+            {
+                name = 'neovim',
+                type = 'stdio',
+                command = 'old-neovim',
+            },
+            {
+                name = 'custom',
+                type = 'stdio',
+                command = 'custom-mcp',
+            },
+        },
+    })
+
+    package.loaded['acp.mcp_runtime'] = nil
+    local runtime = require('acp.mcp_runtime')
+    local servers = runtime.effective_servers()
+
+    package.loaded['mcp'] = original_mcp
+
+    assert.are.same({
+        {
+            name = 'acp.nvim',
+            type = 'stdio',
+            command = 'nvim-mcp',
+            args = { '--stdio' },
+            env = { FOO = 'bar' },
+        },
+        {
+            name = 'custom',
+            type = 'stdio',
+            command = 'custom-mcp',
+        },
+    }, servers)
+end)
+
+it('keeps static MCP server introspection side-effect free', function()
+    local original_mcp = package.loaded['mcp']
+    local started = 0
+
+    package.loaded['mcp'] = {
+        start_all = function()
+            started = started + 1
+            return true
+        end,
+        http_endpoint = function()
+            return {
+                url = 'http://127.0.0.1:7777/mcp',
+            }
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_servers = {
+            {
+                name = 'custom',
+                type = 'stdio',
+                command = 'custom-mcp',
+            },
+        },
+    })
+
+    package.loaded['acp.mcp_runtime'] = nil
+    package.loaded['acp.api'] = nil
+
+    local runtime = require('acp.mcp_runtime')
+    local acp_api = require('acp.api')
+
+    assert.are.same({
+        {
+            name = 'custom',
+            type = 'stdio',
+            command = 'custom-mcp',
+        },
+    }, runtime.static_servers())
+    assert.are.same({
+        {
+            name = 'custom',
+            type = 'stdio',
+            command = 'custom-mcp',
+        },
+    }, acp_api.mcp_servers())
+    assert.are.equal(0, started)
+
+    package.loaded['mcp'] = original_mcp
+end)
+
+it('keeps passive effective_servers introspection side-effect free when a descriptor already exists', function()
+    local original_mcp = package.loaded['mcp']
+    local started = 0
+
+    package.loaded['mcp'] = {
+        start_all = function()
+            started = started + 1
+            return true
+        end,
+        http_endpoint = function()
+            return {
+                url = 'http://127.0.0.1:7777/mcp',
+            }
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_servers = {
+            {
+                name = 'custom',
+                type = 'stdio',
+                command = 'custom-mcp',
+            },
+        },
+    })
+
+    package.loaded['acp.mcp_runtime'] = nil
+    local runtime = require('acp.mcp_runtime')
+    local servers = runtime.effective_servers({ passive = true })
+
+    package.loaded['mcp'] = original_mcp
+
+    assert.are.same({
+        {
+            name = 'acp.nvim',
+            type = 'http',
+            url = 'http://127.0.0.1:7777/mcp',
+        },
+        {
+            name = 'custom',
+            type = 'stdio',
+            command = 'custom-mcp',
+        },
+    }, servers)
+    assert.are.equal(0, started)
+end)
+
+it('preserves effective MCP server introspection through the public API', function()
+    local original_mcp = package.loaded['mcp']
+    local started = 0
+
+    package.loaded['mcp'] = {
+        start_all = function()
+            started = started + 1
+            return true
+        end,
+        http_endpoint = function()
+            return {
+                url = 'http://127.0.0.1:7777/mcp',
+            }
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_servers = {
+            {
+                name = 'custom',
+                type = 'stdio',
+                command = 'custom-mcp',
+            },
+        },
+    })
+
+    package.loaded['acp.mcp_runtime'] = nil
+    package.loaded['acp.api'] = nil
+
+    local acp_api = require('acp.api')
+
+    assert.are.same({
+        {
+            name = 'acp.nvim',
+            type = 'http',
+            url = 'http://127.0.0.1:7777/mcp',
+        },
+        {
+            name = 'custom',
+            type = 'stdio',
+            command = 'custom-mcp',
+        },
+    }, acp_api.effective_mcp_servers())
+    assert.are.equal(1, started)
+
+    package.loaded['mcp'] = original_mcp
+end)
+
+it('refreshes the injected MCP server descriptor when the endpoint changes', function()
+    local original_mcp = package.loaded['mcp']
+    local started = 0
+    local url = 'http://127.0.0.1:7777/mcp'
+
+    package.loaded['mcp'] = {
+        start_all = function()
+            started = started + 1
+            return true
+        end,
+        http_endpoint = function()
+            return {
+                url = url,
+            }
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_servers = {},
+    })
+
+    package.loaded['acp.mcp_runtime'] = nil
+    local runtime = require('acp.mcp_runtime')
+
+    local first = runtime.effective_servers()
+    url = 'http://127.0.0.1:8888/mcp'
+    local second = runtime.effective_servers()
+
+    package.loaded['mcp'] = original_mcp
+
+    assert.are.same('http://127.0.0.1:7777/mcp', first[1].url)
+    assert.are.same('http://127.0.0.1:8888/mcp', second[1].url)
+    assert.are.equal(2, started)
+end)
+
+it('starts mcp.nvim before refreshing a stale cached stdio descriptor', function()
+    local original_mcp = package.loaded['mcp']
+    local started = 0
+
+    package.loaded['mcp'] = {
+        start_all = function()
+            started = started + 1
+            return true
+        end,
+        http_endpoint = function()
+            return nil
+        end,
+        endpoint = function()
+            if started == 0 then
+                return nil
+            end
+
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_servers = {},
+    })
+
+    package.loaded['acp.mcp_runtime'] = nil
+    local runtime = require('acp.mcp_runtime')
+
+    local first = runtime.effective_servers()
+    local second = runtime.effective_servers()
+
+    package.loaded['mcp'] = original_mcp
+
+    assert.are.same({
+        {
+            name = 'acp.nvim',
+            type = 'stdio',
+            command = 'nvim-mcp',
+            args = { '--stdio' },
+        },
+    }, first)
+    assert.are.same(first, second)
+    assert.are.equal(1, started)
+end)
+
+it('prepends guidance with the effective injected server namespace', function()
+    local original_mcp = package.loaded['mcp']
+
+    package.loaded['mcp'] = {
+        start_all = function()
+            return true
+        end,
+        http_endpoint = function()
+            return {
+                url = 'http://127.0.0.1:7777/mcp',
+            }
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_nvim_guidance = true,
+        mcp_servers = {},
+    })
+
+    package.loaded['acp.mcp_runtime'] = nil
+    package.loaded['acp.mcp_guidance'] = nil
+    local guidance = require('acp.mcp_guidance')
+    local prompt = guidance.prepend('hello', {
+        mcpCapabilities = {
+            loadSession = true,
+        },
+    })
+
+    package.loaded['mcp'] = original_mcp
+
+    assert.is_true(prompt:find('`acp%.nvim`', 1, false) ~= nil)
+    assert.is_true(prompt:find('acp%.nvim/editor/list_buffers', 1, false) ~= nil)
+    assert.is_true(prompt:find('acp%.nvim/terminal/wait', 1, false) ~= nil)
+    assert.is_false(prompt:find('editor__list_buffers', 1, true) ~= nil)
+    assert.is_false(prompt:find('terminal__wait', 1, true) ~= nil)
+    assert.is_false(prompt:find('mcp%.nvim/editor/list_buffers', 1, false) ~= nil)
+end)
+
+it('ignores the legacy mcp.nvim alias when selecting guidance namespace', function()
+    local original_mcp = package.loaded['mcp']
+
+    package.loaded['mcp'] = {
+        start_all = function()
+            return true
+        end,
+        http_endpoint = function()
+            return nil
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_nvim_guidance = true,
+        mcp_servers = {
+            {
+                name = 'mcp.nvim',
+                type = 'stdio',
+                command = 'old-mcp',
+            },
+        },
+    })
+
+    package.loaded['acp.mcp_runtime'] = nil
+    package.loaded['acp.mcp_guidance'] = nil
+    local guidance = require('acp.mcp_guidance')
+    local prompt = guidance.prepend('hello', {
+        mcpCapabilities = {
+            loadSession = true,
+        },
+    })
+
+    package.loaded['mcp'] = original_mcp
+
+    assert.is_true(prompt:find('`acp%.nvim`', 1, false) ~= nil)
+    assert.is_true(prompt:find('acp%.nvim/editor/list_buffers', 1, false) ~= nil)
+    assert.is_false(prompt:find('mcp%.nvim/editor/list_buffers', 1, false) ~= nil)
+end)
+
+it('skips MCP guidance when the agent advertises an empty MCP capability set', function()
+    local original_mcp = package.loaded['mcp']
+
+    package.loaded['mcp'] = {
+        start_all = function()
+            return true
+        end,
+        http_endpoint = function()
+            return nil
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_nvim_guidance = true,
+        mcp_servers = {},
+    })
+
+    package.loaded['acp.mcp_runtime'] = nil
+    package.loaded['acp.mcp_guidance'] = nil
+    local guidance = require('acp.mcp_guidance')
+    local prompt = guidance.prepend('hello', {
+        mcpCapabilities = {},
+    })
+
+    package.loaded['mcp'] = original_mcp
+
+    assert.are.equal('hello', prompt)
+end)
+
+it('skips MCP guidance when nested MCP capability payloads do not enable any capability', function()
+    local original_mcp = package.loaded['mcp']
+
+    package.loaded['mcp'] = {
+        start_all = function()
+            return true
+        end,
+        http_endpoint = function()
+            return nil
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_nvim_guidance = true,
+        mcp_servers = {},
+    })
+
+    package.loaded['acp.mcp_runtime'] = nil
+    package.loaded['acp.mcp_guidance'] = nil
+    local guidance = require('acp.mcp_guidance')
+    local prompt = guidance.prepend('hello', {
+        mcpCapabilities = {
+            tools = {},
+            prompts = {
+                listChanged = false,
+            },
+        },
+    })
+
+    package.loaded['mcp'] = original_mcp
+
+    assert.are.equal('hello', prompt)
+end)
+
+it('prepends MCP guidance when a nested MCP capability payload enables a capability', function()
+    local original_mcp = package.loaded['mcp']
+
+    package.loaded['mcp'] = {
+        start_all = function()
+            return true
+        end,
+        http_endpoint = function()
+            return nil
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_nvim_guidance = true,
+        mcp_servers = {},
+    })
+
+    package.loaded['acp.mcp_runtime'] = nil
+    package.loaded['acp.mcp_guidance'] = nil
+    local guidance = require('acp.mcp_guidance')
+    local prompt = guidance.prepend('hello', {
+        mcpCapabilities = {
+            tools = {
+                listChanged = true,
+            },
+        },
+    })
+
+    package.loaded['mcp'] = original_mcp
+
+    assert.is_true(prompt:find('acp%.nvim/editor/list_buffers', 1, false) ~= nil)
+end)
+
+it('skips MCP guidance when the agent does not advertise MCP capabilities', function()
+    local original_mcp = package.loaded['mcp']
+
+    package.loaded['mcp'] = {
+        start_all = function()
+            return true
+        end,
+        http_endpoint = function()
+            return nil
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_nvim_guidance = true,
+        mcp_servers = {},
+    })
+
+    package.loaded['acp.mcp_runtime'] = nil
+    package.loaded['acp.mcp_guidance'] = nil
+    local guidance = require('acp.mcp_guidance')
+    local prompt = guidance.prepend('hello', {
+        promptCapabilities = {
+            image = true,
+        },
+    })
+
+    package.loaded['mcp'] = original_mcp
+
+    assert.are.equal('hello', prompt)
+end)
+
 it('responds to permission requests with the configured default option', function()
     local bufnr = api.open_chat()
     api.set_prompt('need permission')
@@ -255,10 +1056,12 @@ it('limits approval overlay shortcuts to mapped keys', function()
         options = options,
     })
 
-    assert.is_true(vim.tbl_contains(
-        surface_virtual_texts(bufnr),
-        'Approval needed for Run command: g1 Option 1, g2 Option 2, g3 Option 3, g4 Option 4, g5 Option 5, g6 Option 6, g7 Option 7, g8 Option 8, g9 Option 9, … use :ACPSelectApprovalOption 10'
-    ))
+    assert.is_true(
+        vim.tbl_contains(
+            surface_virtual_texts(bufnr),
+            'Approval needed for Run command: g1 Option 1, g2 Option 2, g3 Option 3, g4 Option 4, g5 Option 5, g6 Option 6, g7 Option 7, g8 Option 8, g9 Option 9, … use :ACPSelectApprovalOption 10'
+        )
+    )
     assert.are.same({
         'Pending approvals (1) — active: Run command',
         'g1 Option 1',
@@ -416,7 +1219,7 @@ it('falls back to command-based approval hints for options beyond mapped keys', 
         lines[13]
     )
     assert.are.equal(
-        'Option 10 [allow_once] (`option-10`)  ->  select with `:ACPSelectApprovalOption 10` or use the inline action',
+        'Option 10 [allow_once] (`option-10`)  ->  select with `:ACPSelectApprovalOption <index>` or use the inline action',
         lines[14]
     )
 end)
@@ -995,7 +1798,8 @@ it('switches back to the waiting session when an inline approval arrives for it'
 end)
 
 it('reads file content from disk via fs/read_text_file', function()
-    local path = vim.fn.getcwd() .. '/disk-read.txt'
+    local path = vim.fn.getcwd() .. '/tests/fixtures/disk-read.txt'
+    vim.fn.mkdir(vim.fn.fnamemodify(path, ':h'), 'p')
     local handle = assert(io.open(path, 'wb'))
     assert(handle:write('alpha\nbeta\n'))
     handle:close()
@@ -1007,13 +1811,14 @@ it('reads file content from disk via fs/read_text_file', function()
     local response = fake_client:emit_request('fs/read_text_file', {
         sessionId = 'sess_123',
         path = path,
+        cwd = vim.fn.getcwd(),
     })
 
     assert.is_nil(response.error)
     assert.are.equal('alpha\nbeta\n', response.result.content)
 end)
 
-it('reads unsaved open-buffer content via fs/read_text_file', function()
+it('reads unsaved open-buffer content via fs/read_text_file outside allowed roots when the buffer is loaded', function()
     local path = temp_path('open-buffer-read.txt')
     local handle = assert(io.open(path, 'wb'))
     assert(handle:write('on disk\n'))
@@ -1030,6 +1835,7 @@ it('reads unsaved open-buffer content via fs/read_text_file', function()
     local response = fake_client:emit_request('fs/read_text_file', {
         sessionId = 'sess_123',
         path = path,
+        cwd = vim.fn.getcwd(),
     })
 
     assert.is_nil(response.error)
@@ -1038,7 +1844,8 @@ it('reads unsaved open-buffer content via fs/read_text_file', function()
 end)
 
 it('reads a limited line window via fs/read_text_file', function()
-    local path = vim.fn.getcwd() .. '/partial-read.txt'
+    local path = vim.fn.getcwd() .. '/tests/fixtures/partial-read.txt'
+    vim.fn.mkdir(vim.fn.fnamemodify(path, ':h'), 'p')
     local handle = assert(io.open(path, 'wb'))
     assert(handle:write('one\ntwo\nthree\n'))
     handle:close()
@@ -1050,6 +1857,7 @@ it('reads a limited line window via fs/read_text_file', function()
     local response = fake_client:emit_request('fs/read_text_file', {
         sessionId = 'sess_123',
         path = path,
+        cwd = vim.fn.getcwd(),
         line = 2,
         limit = 1,
     })
@@ -1069,10 +1877,36 @@ it('returns an empty snapshot when fs/read_text_file targets a missing file insi
     local response = fake_client:emit_request('fs/read_text_file', {
         sessionId = 'sess_123',
         path = path,
+        cwd = vim.fn.getcwd(),
     })
 
     assert.is_nil(response.error)
     assert.are.equal('', response.result.content)
+end)
+
+it('rejects fs/read_text_file when opening a broken symlink inside the workspace fails', function()
+    local target = vim.fn.getcwd() .. '/missing-symlink-target.txt'
+    local path = vim.fn.getcwd() .. '/broken-read-link.txt'
+
+    os.remove(path)
+    os.remove(target)
+    assert.is_truthy(vim.uv.fs_symlink(target, path))
+
+    api.open_chat()
+    api.set_prompt('read broken symlink')
+    api.submit_prompt()
+
+    local response = fake_client:emit_request('fs/read_text_file', {
+        sessionId = 'sess_123',
+        path = path,
+        cwd = vim.fn.getcwd(),
+    })
+
+    os.remove(path)
+
+    assert.is_nil(response.result)
+    assert.is_not_nil(response.error)
+    assert.is_truthy(response.error.message:match('No such file'))
 end)
 
 it('rejects fs/read_text_file outside allowed roots', function()
@@ -1097,7 +1931,8 @@ it('rejects fs/read_text_file outside allowed roots', function()
 end)
 
 it('writes file content via fs/write_text_file', function()
-    local path = vim.fn.getcwd() .. '/write-file.txt'
+    local path = vim.fn.getcwd() .. '/tests/fixtures/write-file.txt'
+    vim.fn.mkdir(vim.fn.fnamemodify(path, ':h'), 'p')
     os.remove(path)
 
     api.open_chat()
@@ -1107,6 +1942,7 @@ it('writes file content via fs/write_text_file', function()
     local response = fake_client:emit_request('fs/write_text_file', {
         sessionId = 'sess_123',
         path = path,
+        cwd = vim.fn.getcwd(),
         content = 'hello\nworld\n',
     })
 
@@ -1115,7 +1951,7 @@ it('writes file content via fs/write_text_file', function()
     assert.are.equal('hello\nworld\n', read_file(path))
 end)
 
-it('updates an open buffer via fs/write_text_file', function()
+it('rejects updating a modified open buffer via fs/write_text_file outside allowed roots', function()
     local path = temp_path('write-open-buffer.txt')
     local handle = assert(io.open(path, 'wb'))
     assert(handle:write('before\n'))
@@ -1135,13 +1971,13 @@ it('updates an open buffer via fs/write_text_file', function()
         content = 'after\nvalue\n',
     })
 
-    assert.is_nil(response.error)
-    assert.are.same({ 'after', 'value' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
-    assert.is_false(vim.bo[file_buf].modified)
-    assert.are.equal('after\nvalue\n', read_file(path))
+    assert.is_not_nil(response.error)
+    assert.are.same({ 'before', 'draft change' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
+    assert.is_true(vim.bo[file_buf].modified)
+    assert.are.equal('before\n', read_file(path))
 end)
 
-it('records undo history for open-buffer fs/write_text_file updates', function()
+it('rejects reloading a modified open buffer for fs/write_text_file outside allowed roots', function()
     local path = temp_path('write-open-buffer-undo.txt')
     local handle = assert(io.open(path, 'wb'))
     assert(handle:write('before\n'))
@@ -1152,67 +1988,7 @@ it('records undo history for open-buffer fs/write_text_file updates', function()
     vim.api.nvim_buf_set_lines(file_buf, 0, -1, false, { 'before', 'draft change' })
 
     api.open_chat()
-    api.set_prompt('write through buffer and preserve undo')
-    api.submit_prompt()
-
-    local response = fake_client:emit_request('fs/write_text_file', {
-        sessionId = 'sess_123',
-        path = path,
-        content = 'after\nvalue\n',
-    })
-
-    assert.is_nil(response.error)
-    assert.are.same({ 'after', 'value' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
-    assert.is_false(vim.bo[file_buf].modified)
-
-    vim.cmd('undo')
-
-    assert.are.same({ 'before', 'draft change' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
-    assert.is_true(vim.bo[file_buf].modified)
-end)
-
-it('preserves prior unsaved buffer state in undo history for fs/write_text_file', function()
-    local path = temp_path('write-open-buffer-undo-preserve.txt')
-    local handle = assert(io.open(path, 'wb'))
-    assert(handle:write('alpha\nbeta\n'))
-    handle:close()
-
-    vim.cmd('edit ' .. vim.fn.fnameescape(path))
-    local file_buf = vim.api.nvim_get_current_buf()
-    vim.api.nvim_buf_set_lines(file_buf, 0, -1, false, { 'alpha', 'beta', 'user draft' })
-
-    api.open_chat()
-    api.set_prompt('write through buffer and preserve unsaved undo state')
-    api.submit_prompt()
-
-    local response = fake_client:emit_request('fs/write_text_file', {
-        sessionId = 'sess_123',
-        path = path,
-        content = 'alpha\nbeta updated\nuser draft\n',
-    })
-
-    assert.is_nil(response.error)
-    assert.are.same({ 'alpha', 'beta updated', 'user draft' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
-    assert.is_false(vim.bo[file_buf].modified)
-
-    vim.cmd('undo')
-
-    assert.are.same({ 'alpha', 'beta', 'user draft' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
-    assert.is_true(vim.bo[file_buf].modified)
-end)
-
-it('rejects fs/write_text_file before mutating disk when a loaded buffer cannot be synchronized', function()
-    local path = temp_path('write-nomodifiable-buffer.txt')
-    local handle = assert(io.open(path, 'wb'))
-    assert(handle:write('before\n'))
-    handle:close()
-
-    vim.cmd('edit ' .. vim.fn.fnameescape(path))
-    local file_buf = vim.api.nvim_get_current_buf()
-    vim.bo[file_buf].modifiable = false
-
-    api.open_chat()
-    api.set_prompt('write through nomodifiable buffer')
+    api.set_prompt('write through buffer without undo divergence')
     api.submit_prompt()
 
     local response = fake_client:emit_request('fs/write_text_file', {
@@ -1222,13 +1998,303 @@ it('rejects fs/write_text_file before mutating disk when a loaded buffer cannot 
     })
 
     assert.is_not_nil(response.error)
-    assert.are.same({ 'before' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
-    assert.is_false(vim.bo[file_buf].modified)
-    assert.is_false(vim.bo[file_buf].modifiable)
-    assert.are.equal('before\n', read_file(path))
+    assert.are.same({ 'before', 'draft change' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
+    assert.is_true(vim.bo[file_buf].modified)
 end)
 
-it('treats unchanged fs/write_text_file content as a no-op for a loaded non-modifiable buffer', function()
+it('reloads an open buffer for fs/write_text_file outside allowed roots when it is safe to synchronize', function()
+    local path = temp_path('write-open-buffer-reload.txt')
+    local handle = assert(io.open(path, 'wb'))
+    assert(handle:write('alpha\nbeta\n'))
+    handle:close()
+
+    vim.cmd('edit ' .. vim.fn.fnameescape(path))
+    local file_buf = vim.api.nvim_get_current_buf()
+    vim.bo[file_buf].fileformat = 'unix'
+
+    api.open_chat()
+    api.set_prompt('write through buffer and reload file metadata')
+    api.submit_prompt()
+
+    local response = fake_client:emit_request('fs/write_text_file', {
+        sessionId = 'sess_123',
+        path = path,
+        content = 'alpha\r\nbeta updated\r\n',
+    })
+
+    assert.is_nil(response.error)
+    assert.are.equal('alpha\r\nbeta updated\r\n', table.concat(vim.api.nvim_buf_get_lines(file_buf, 0, -1, false), '\r\n') .. '\r\n')
+    assert.is_false(vim.bo[file_buf].modified)
+    assert.are.equal('dos', vim.bo[file_buf].fileformat)
+    assert.are.equal('alpha\r\nbeta updated\r\n', read_file(path))
+end)
+
+it('reloads a hidden buffer for fs/write_text_file outside allowed roots when it is safe to synchronize', function()
+    local visible_path = temp_path('write-hidden-buffer-visible.txt')
+    local visible_handle = assert(io.open(visible_path, 'wb'))
+    assert(visible_handle:write('visible\n'))
+    visible_handle:close()
+
+    local hidden_path = temp_path('write-hidden-buffer-reload.txt')
+    local hidden_handle = assert(io.open(hidden_path, 'wb'))
+    assert(hidden_handle:write('alpha\nbeta\n'))
+    hidden_handle:close()
+
+    vim.cmd('edit ' .. vim.fn.fnameescape(hidden_path))
+    local hidden_buf = vim.api.nvim_get_current_buf()
+    vim.bo[hidden_buf].fileformat = 'unix'
+    vim.bo[hidden_buf].modifiable = false
+
+    vim.cmd('edit ' .. vim.fn.fnameescape(visible_path))
+    local visible_buf = vim.api.nvim_get_current_buf()
+
+    api.open_chat()
+    api.set_prompt('write through hidden buffer and reload file metadata')
+    api.submit_prompt()
+
+    local response = fake_client:emit_request('fs/write_text_file', {
+        sessionId = 'sess_123',
+        path = hidden_path,
+        content = 'alpha\r\nbeta updated\r\n',
+    })
+
+    assert.is_nil(response.error)
+    assert.are.same({ 'alpha', 'beta updated' }, vim.api.nvim_buf_get_lines(hidden_buf, 0, -1, false))
+    assert.is_false(vim.bo[hidden_buf].modified)
+    assert.is_false(vim.bo[hidden_buf].modifiable)
+    assert.are.equal('dos', vim.bo[hidden_buf].fileformat)
+    assert.are.equal('alpha\r\nbeta updated\r\n', read_file(hidden_path))
+end)
+
+it(
+    'preserves the current window when updating another open buffer via fs/write_text_file outside allowed roots',
+    function()
+        local left_path = temp_path('write-open-buffer-window-left.txt')
+        local left_handle = assert(io.open(left_path, 'wb'))
+        assert(left_handle:write('left\n'))
+        left_handle:close()
+
+        local right_path = temp_path('write-open-buffer-window-right.txt')
+        local right_handle = assert(io.open(right_path, 'wb'))
+        assert(right_handle:write('right\nbefore\n'))
+        right_handle:close()
+
+        vim.cmd('edit ' .. vim.fn.fnameescape(left_path))
+        local left_win = vim.api.nvim_get_current_win()
+        local left_buf = vim.api.nvim_get_current_buf()
+
+        vim.cmd('vsplit')
+        vim.cmd('edit ' .. vim.fn.fnameescape(right_path))
+        local right_buf = vim.api.nvim_get_current_buf()
+
+        vim.api.nvim_set_current_win(left_win)
+
+        api.open_chat()
+        api.set_prompt('write through buffer in another window')
+        api.submit_prompt()
+
+        local response = fake_client:emit_request('fs/write_text_file', {
+            sessionId = 'sess_123',
+            path = right_path,
+            content = 'right\nafter\n',
+        })
+
+        assert.is_nil(response.error)
+        assert.are.equal(left_win, vim.api.nvim_get_current_win())
+        assert.are.same({ 'right', 'after' }, vim.api.nvim_buf_get_lines(right_buf, 0, -1, false))
+    end
+)
+
+it('reloads an open buffer shown in multiple windows outside allowed roots', function()
+    local left_path = temp_path('write-open-buffer-multi-window-left.txt')
+    local left_handle = assert(io.open(left_path, 'wb'))
+    assert(left_handle:write('left\n'))
+    left_handle:close()
+
+    local shared_path = temp_path('write-open-buffer-multi-window-shared.txt')
+    local shared_handle = assert(io.open(shared_path, 'wb'))
+    assert(shared_handle:write('shared\nbefore\n'))
+    shared_handle:close()
+
+    vim.cmd('edit ' .. vim.fn.fnameescape(left_path))
+    local left_win = vim.api.nvim_get_current_win()
+    local left_buf = vim.api.nvim_get_current_buf()
+    vim.wo[left_win].statusline = 'left-status'
+
+    vim.cmd('vsplit')
+    vim.cmd('edit ' .. vim.fn.fnameescape(shared_path))
+    local first_shared_win = vim.api.nvim_get_current_win()
+    local shared_buf = vim.api.nvim_get_current_buf()
+    vim.wo[first_shared_win].statusline = 'shared-status-a'
+
+    vim.cmd('split')
+    local second_shared_win = vim.api.nvim_get_current_win()
+    assert.are.equal(shared_buf, vim.api.nvim_get_current_buf())
+    vim.wo[second_shared_win].statusline = 'shared-status-b'
+
+    vim.api.nvim_set_current_win(left_win)
+
+    api.open_chat()
+    api.set_prompt('write through buffer in two windows')
+    api.submit_prompt()
+
+    local response = fake_client:emit_request('fs/write_text_file', {
+        sessionId = 'sess_123',
+        path = shared_path,
+        content = 'shared\nafter\n',
+    })
+
+    assert.is_nil(response.error)
+    assert.are.equal(left_win, vim.api.nvim_get_current_win())
+    assert.are.equal('left-status', vim.wo[left_win].statusline)
+    assert.are.equal('shared-status-a', vim.wo[first_shared_win].statusline)
+    assert.are.equal('shared-status-b', vim.wo[second_shared_win].statusline)
+    assert.are.same({ 'shared', 'after' }, vim.api.nvim_buf_get_lines(shared_buf, 0, -1, false))
+end)
+
+it('rejects fs/write_text_file before mutating disk when a hidden non-modifiable buffer has unsaved changes', function()
+    local visible_path = temp_path('write-hidden-nomodifiable-visible.txt')
+    local visible_handle = assert(io.open(visible_path, 'wb'))
+    assert(visible_handle:write('visible\n'))
+    visible_handle:close()
+
+    local hidden_path = temp_path('write-hidden-nomodifiable-modified.txt')
+    local hidden_handle = assert(io.open(hidden_path, 'wb'))
+    assert(hidden_handle:write('before\n'))
+    hidden_handle:close()
+
+    vim.cmd('edit ' .. vim.fn.fnameescape(hidden_path))
+    local hidden_buf = vim.api.nvim_get_current_buf()
+    vim.bo[hidden_buf].modifiable = true
+    vim.api.nvim_buf_set_lines(hidden_buf, 0, -1, false, { 'local change' })
+    vim.bo[hidden_buf].modifiable = false
+
+    vim.cmd('edit ' .. vim.fn.fnameescape(visible_path))
+
+    api.open_chat()
+    api.set_prompt('reject write through hidden modified nomodifiable buffer')
+    api.submit_prompt()
+
+    local response = fake_client:emit_request('fs/write_text_file', {
+        sessionId = 'sess_123',
+        path = hidden_path,
+        content = 'after\nvalue\n',
+    })
+
+    assert.is_not_nil(response.error)
+    assert.are.same({ 'local change' }, vim.api.nvim_buf_get_lines(hidden_buf, 0, -1, false))
+    assert.is_true(vim.bo[hidden_buf].modified)
+    assert.is_false(vim.bo[hidden_buf].modifiable)
+    assert.are.equal('before\n', read_file(hidden_path))
+end)
+
+it('rejects fs/write_text_file before mutating disk when a hidden modifiable buffer has unsaved changes', function()
+    local visible_path = temp_path('write-hidden-modifiable-visible.txt')
+    local visible_handle = assert(io.open(visible_path, 'wb'))
+    assert(visible_handle:write('visible\n'))
+    visible_handle:close()
+
+    local hidden_path = temp_path('write-hidden-modifiable-modified.txt')
+    local hidden_handle = assert(io.open(hidden_path, 'wb'))
+    assert(hidden_handle:write('before\n'))
+    hidden_handle:close()
+
+    vim.cmd('edit ' .. vim.fn.fnameescape(hidden_path))
+    local hidden_buf = vim.api.nvim_get_current_buf()
+    vim.api.nvim_buf_set_lines(hidden_buf, 0, -1, false, { 'local change' })
+
+    vim.cmd('edit ' .. vim.fn.fnameescape(visible_path))
+
+    api.open_chat()
+    api.set_prompt('reject write through hidden modified buffer')
+    api.submit_prompt()
+
+    local response = fake_client:emit_request('fs/write_text_file', {
+        sessionId = 'sess_123',
+        path = hidden_path,
+        content = 'after\nvalue\n',
+    })
+
+    assert.is_not_nil(response.error)
+    assert.are.same({ 'local change' }, vim.api.nvim_buf_get_lines(hidden_buf, 0, -1, false))
+    assert.is_true(vim.bo[hidden_buf].modified)
+    assert.are.equal('before\n', read_file(hidden_path))
+end)
+
+it(
+    'rejects fs/write_text_file before mutating disk when a visible non-modifiable non-file buffer cannot be synchronized',
+    function()
+        local path = temp_path('write-nomodifiable-buffer.txt')
+        local handle = assert(io.open(path, 'wb'))
+        assert(handle:write('before\n'))
+        handle:close()
+
+        vim.cmd('edit ' .. vim.fn.fnameescape(path))
+        local file_buf = vim.api.nvim_get_current_buf()
+        vim.bo[file_buf].modifiable = false
+        vim.bo[file_buf].buftype = 'nofile'
+
+        api.open_chat()
+        api.set_prompt('write through nomodifiable buffer')
+        api.submit_prompt()
+
+        local response = fake_client:emit_request('fs/write_text_file', {
+            sessionId = 'sess_123',
+            path = path,
+            content = 'after\nvalue\n',
+        })
+
+        assert.is_not_nil(response.error)
+        assert.are.same({ 'before' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
+        assert.is_false(vim.bo[file_buf].modified)
+        assert.is_false(vim.bo[file_buf].modifiable)
+        assert.are.equal('before\n', read_file(path))
+    end
+)
+
+it('rejects fs/write_text_file before mutating disk when hidden buffer synchronization would fail', function()
+    local visible_path = temp_path('write-hidden-sync-visible.txt')
+    local visible_handle = assert(io.open(visible_path, 'wb'))
+    assert(visible_handle:write('visible\n'))
+    visible_handle:close()
+
+    local hidden_path = temp_path('write-hidden-sync-fail.txt')
+    local hidden_handle = assert(io.open(hidden_path, 'wb'))
+    assert(hidden_handle:write('before\n'))
+    hidden_handle:close()
+
+    vim.cmd('edit ' .. vim.fn.fnameescape(hidden_path))
+    local hidden_buf = vim.api.nvim_get_current_buf()
+
+    vim.cmd('edit ' .. vim.fn.fnameescape(visible_path))
+
+    local original_set_lines = vim.api.nvim_buf_set_lines
+    vim.api.nvim_buf_set_lines = function(bufnr, start, finish, strict, lines)
+        if bufnr == hidden_buf then
+            error('sync failed')
+        end
+
+        return original_set_lines(bufnr, start, finish, strict, lines)
+    end
+
+    api.open_chat()
+    api.set_prompt('reject write when hidden buffer sync fails')
+    api.submit_prompt()
+
+    local response = fake_client:emit_request('fs/write_text_file', {
+        sessionId = 'sess_123',
+        path = hidden_path,
+        content = 'after\nvalue\n',
+    })
+
+    vim.api.nvim_buf_set_lines = original_set_lines
+
+    assert.is_not_nil(response.error)
+    assert.are.same({ 'before' }, vim.api.nvim_buf_get_lines(hidden_buf, 0, -1, false))
+    assert.are.equal('before\n', read_file(hidden_path))
+end)
+
+it('allows unchanged fs/write_text_file content for a loaded non-modifiable buffer outside allowed roots', function()
     local path = temp_path('write-nomodifiable-buffer-noop.txt')
     local handle = assert(io.open(path, 'wb'))
     assert(handle:write('before\n'))
@@ -1250,9 +2316,105 @@ it('treats unchanged fs/write_text_file content as a no-op for a loaded non-modi
 
     assert.is_nil(response.error)
     assert.are.same({ 'before' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
-    assert.is_false(vim.bo[file_buf].modified)
+    assert.is_true(vim.bo[file_buf].modified)
     assert.is_false(vim.bo[file_buf].modifiable)
     assert.are.equal('before\n', read_file(path))
+end)
+
+it('allows empty fs/write_text_file content for an empty loaded buffer outside allowed roots', function()
+    local path = temp_path('write-empty-buffer-noop.txt')
+    local handle = assert(io.open(path, 'wb'))
+    assert(handle:write(''))
+    handle:close()
+
+    vim.cmd('edit ' .. vim.fn.fnameescape(path))
+    local file_buf = vim.api.nvim_get_current_buf()
+    vim.bo[file_buf].modifiable = false
+
+    api.open_chat()
+    api.set_prompt('noop write through empty loaded buffer')
+    api.submit_prompt()
+
+    local response = fake_client:emit_request('fs/write_text_file', {
+        sessionId = 'sess_123',
+        path = path,
+        content = '',
+    })
+
+    assert.is_nil(response.error)
+    assert.are.same({ '' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
+    assert.is_false(vim.bo[file_buf].modified)
+    assert.is_false(vim.bo[file_buf].modifiable)
+    assert.are.equal('', read_file(path))
+end)
+
+it('accepts Windows-style absolute paths before root validation', function()
+    os.remove('C:\\temp\\acp-fs-outside-write.txt')
+    api.open_chat()
+    api.set_prompt('windows absolute path validation')
+    api.submit_prompt()
+
+    local response = fake_client:emit_request('fs/write_text_file', {
+        sessionId = 'sess_123',
+        path = 'C:\\temp\\acp-fs-outside-write.txt',
+        content = 'outside\n',
+    })
+
+    os.remove('C:\\temp\\acp-fs-outside-write.txt')
+
+    assert.is_not_nil(response.error)
+    assert.is_true(response.error.message:match('allowed workspace root') ~= nil)
+    assert.is_false(response.error.message:match('must be absolute') ~= nil)
+end)
+
+it('accepts Windows UNC descendants within the workspace root', function()
+    api.open_chat()
+    api.set_prompt('windows unc path validation')
+    api.submit_prompt()
+
+    local response = fake_client:emit_request('fs/write_text_file', {
+        sessionId = 'sess_123',
+        cwd = '\\\\server\\share',
+        path = '\\\\server\\share\\folder\\file.txt',
+        content = 'inside\n',
+    })
+
+    assert.is_nil(response.error)
+end)
+
+it('accepts fs/write_text_file at the workspace root with a trailing separator', function()
+    local path = '/tmp/acp-fs-root-trailing-slash'
+    os.remove(path)
+
+    api.open_chat()
+    api.set_prompt('workspace root trailing slash validation')
+    api.submit_prompt()
+
+    local response = fake_client:emit_request('fs/write_text_file', {
+        sessionId = 'sess_123',
+        cwd = '/tmp/acp-fs-root-trailing-slash',
+        path = '/tmp/acp-fs-root-trailing-slash/',
+        content = 'root\n',
+    })
+
+    os.remove(path)
+
+    assert.is_nil(response.error)
+end)
+
+it('accepts a Windows UNC workspace root with a trailing separator', function()
+    api.open_chat()
+    api.set_prompt('windows unc root trailing slash validation')
+    api.submit_prompt()
+
+    local response = fake_client:emit_request('fs/write_text_file', {
+        sessionId = 'sess_123',
+        cwd = [[\\server\share]],
+        path = [[\\server\share\]],
+        content = 'root\n',
+    })
+
+    assert.is_nil(response.error)
 end)
 
 it('rejects fs/write_text_file outside allowed roots', function()
@@ -1272,6 +2434,56 @@ it('rejects fs/write_text_file outside allowed roots', function()
     assert.is_not_nil(response.error)
     assert.is_true(response.error.message:match('allowed workspace root') ~= nil)
     assert.is_false(vim.uv.fs_stat(path) ~= nil)
+end)
+
+it('reads fs/read_text_file from a loaded buffer outside allowed roots', function()
+    local path = '/tmp/acp-fs-outside-read.txt'
+    vim.fn.writefile({ 'outside read' }, path)
+
+    api.open_chat()
+    api.set_prompt('read outside through loaded buffer')
+    api.submit_prompt()
+
+    local file_buf = vim.fn.bufadd(path)
+    vim.fn.bufload(file_buf)
+    vim.api.nvim_buf_set_lines(file_buf, 0, -1, false, { 'unsaved outside read' })
+    vim.bo[file_buf].modified = true
+
+    local response = fake_client:emit_request('fs/read_text_file', {
+        sessionId = 'sess_123',
+        path = path,
+    })
+
+    vim.api.nvim_buf_delete(file_buf, { force = true })
+    os.remove(path)
+
+    assert.is_nil(response.error)
+    assert.are.equal('unsaved outside read\n', response.result.content)
+end)
+
+it('writes fs/write_text_file to a loaded buffer outside allowed roots when the buffer is synchronized', function()
+    local path = '/tmp/acp-fs-outside-loaded-write.txt'
+    vim.fn.writefile({ 'outside write' }, path)
+
+    api.open_chat()
+    api.set_prompt('reject outside loaded write')
+    api.submit_prompt()
+
+    local file_buf = vim.fn.bufadd(path)
+    vim.fn.bufload(file_buf)
+
+    local response = fake_client:emit_request('fs/write_text_file', {
+        sessionId = 'sess_123',
+        path = path,
+        content = 'mutated outside\n',
+    })
+
+    vim.api.nvim_buf_delete(file_buf, { force = true })
+    local disk_lines = vim.fn.readfile(path)
+    os.remove(path)
+
+    assert.is_nil(response.error)
+    assert.are.same({ 'mutated outside' }, disk_lines)
 end)
 
 it('creates a terminal and returns captured output', function()
@@ -1788,22 +3000,19 @@ it('cancels a pending inline approval when the transport is cleared', function()
     assert.is_false(vim.tbl_contains(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), '## Approval Needed'))
 end)
 
-it('cancels the global live turn even after switching to another local session', function()
+it('switches to the cancelled waiting session when cancelling from another local session', function()
     api.open_chat()
     api.set_prompt('cancel from background')
     local first = api.submit_prompt()
 
-    local second = api.new_session()
+    api.new_session()
     api.set_prompt('keep this draft')
 
     local cancelled = api.cancel_prompt()
 
     assert.are.equal(first.id, cancelled.id)
     assert.are.equal('cancelled', first.status)
-    assert.are.equal(second.id, api.current_session().id)
-    assert.are.equal('keep this draft', api.get_prompt())
-
-    api.select_session(first.id)
+    assert.are.equal(first.id, api.current_session().id)
     assert.are.equal('cancel from background', api.get_prompt())
 end)
 
@@ -1898,9 +3107,37 @@ it('uses a fresh remote session for the next prompt turn on the same local sessi
         )
     )
     assert.is_not_nil(string.find(second_client.async_calls[1].params.prompt[1].text, '### User\nfirst turn', 1, true))
-    assert.are.equal('second turn', second_client.async_calls[1].params.prompt[2].text)
+    assert.is_true(second_client.async_calls[1].params.prompt[2].text:match('second turn%s*$') ~= nil)
     assert.are.equal('cancelled', response.result.outcome.outcome)
     assert.is_false(vim.tbl_contains(lines, 'stale old turn'))
+end)
+
+it('uses the active session cwd for fs/read_text_file when process cwd differs', function()
+    local workspace = vim.fn.tempname()
+    vim.fn.mkdir(workspace, 'p')
+    local nested = workspace .. '/nested'
+    vim.fn.mkdir(nested, 'p')
+    local file_path = workspace .. '/inside.txt'
+
+    api.open_chat()
+    api.set_prompt('read from session cwd')
+    api.submit_prompt()
+
+    local original_cwd = vim.fn.getcwd()
+    vim.cmd('cd ' .. vim.fn.fnameescape(nested))
+
+    local response = fake_client:emit_request('fs/read_text_file', {
+        sessionId = 'sess_123',
+        path = file_path,
+        cwd = workspace,
+    })
+
+    vim.cmd('cd ' .. vim.fn.fnameescape(original_cwd))
+
+    assert.is_nil(response.error)
+    assert.are.same({
+        content = '',
+    }, response.result)
 end)
 
 it('loads an existing remote session for a follow-up turn when the agent supports session/load', function()
@@ -1978,7 +3215,7 @@ it('loads an existing remote session for a follow-up turn when the agent support
     assert.are.equal('sess_123', current_session.remote_id)
     assert.are.equal('sess_123', second_client.async_calls[1].params.sessionId)
     assert.are.equal(1, #second_client.async_calls[1].params.prompt)
-    assert.are.equal('second turn', second_client.async_calls[1].params.prompt[1].text)
+    assert.is_true(second_client.async_calls[1].params.prompt[1].text:match('second turn%s*$') ~= nil)
     assert.are.equal('cancelled', response.result.outcome.outcome)
     assert.is_false(vim.tbl_contains(lines, 'duplicate history from load'))
     assert.is_false(vim.tbl_contains(lines, 'stale resumed turn'))

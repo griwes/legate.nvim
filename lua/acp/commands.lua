@@ -32,6 +32,36 @@ local function slash_command_names()
     return names
 end
 
+
+---@return acp.AvailableCommand[]
+local function slash_commands()
+    local ok, commands = pcall(function()
+        return api().slash_commands()
+    end)
+
+    if not ok then
+        return {}
+    end
+
+    return commands
+end
+
+---@param command acp.AvailableCommand
+---@return string[]
+local function slash_command_input_completions(command)
+    if type(command.input) ~= 'table' then
+        return {}
+    end
+
+    local completions = {}
+
+    if type(command.input.hint) == 'string' and command.input.hint ~= '' then
+        table.insert(completions, command.input.hint)
+    end
+
+    return completions
+end
+
 ---@return string[]
 local function approval_ordinals()
     local ok, approvals = pcall(function()
@@ -61,14 +91,18 @@ local function pending_approval_option_selections()
         return {}
     end
 
-    local selections = {}
+    local ids = {}
+    local approval = pending_approvals[1]
 
-    for index, option in ipairs(pending_approvals[1].options or {}) do
-        table.insert(selections, tostring(index))
-        table.insert(selections, option.optionId)
+    if approval ~= nil then
+        for _, option in ipairs(approval.options or {}) do
+            if type(option.optionId) == 'string' then
+                table.insert(ids, option.optionId)
+            end
+        end
     end
 
-    return selections
+    return ids
 end
 
 ---@return string[]
@@ -77,7 +111,11 @@ local function pending_approval_option_selections_with_request()
         return api().pending_approvals()
     end)
 
-    if not ok then
+    if not ok or #pending_approvals == 0 then
+        return {}
+    end
+
+    if #pending_approvals == 1 then
         return pending_approval_option_selections()
     end
 
@@ -85,11 +123,11 @@ local function pending_approval_option_selections_with_request()
 
     for _, approval in ipairs(pending_approvals) do
         for _, option in ipairs(approval.options or {}) do
-            table.insert(ids, string.format('%s:%s', approval.request_id, option.optionId))
+            if type(option.optionId) == 'string' then
+                table.insert(ids, string.format('%s:%s', approval.request_id, option.optionId))
+            end
         end
     end
-
-    vim.list_extend(ids, pending_approval_option_selections())
 
     return ids
 end
@@ -133,6 +171,37 @@ local function create(command, rhs, opts)
     end
 
     vim.api.nvim_create_user_command(command, rhs, opts or {})
+end
+
+---@param server table
+---@return table
+local function mcp_server_for_display(server)
+    local display = vim.deepcopy(server)
+
+    if server.type == 'stdio' then
+        display.command = server.command or vim.NIL
+        display.args = server.args or {}
+
+        if server.env == nil then
+            display.env = vim.NIL
+        elseif vim.islist(server.env) then
+            display.env = vim.tbl_map(function(variable)
+                return { name = variable.name, value = '<redacted>' }
+            end, server.env)
+        else
+            display.env = {}
+
+            for name, _ in pairs(server.env) do
+                table.insert(display.env, { name = name, value = '<redacted>' })
+            end
+
+            table.sort(display.env, function(left, right)
+                return left.name < right.name
+            end)
+        end
+    end
+
+    return display
 end
 
 ---Register ACP user commands.
@@ -242,7 +311,7 @@ function M.ensure()
 
         api().select_approval_option(selection)
     end, {
-        desc = 'Resolve the current inline ACP approval by option index or id',
+        desc = 'Resolve the current inline ACP approval by index or requestId:optionId; bare option ids are still accepted for a single pending approval',
         nargs = 1,
         complete = function()
             return pending_approval_option_selections_with_request()
@@ -273,6 +342,26 @@ function M.ensure()
         vim.notify(table.concat(lines, '\n'))
     end, {
         desc = 'List ACP slash commands',
+    })
+
+    create('ACPMcpServers', function()
+        local servers = api().effective_mcp_servers()
+
+        if #servers == 0 then
+            vim.notify('No ACP MCP servers are configured')
+            return
+        end
+
+        local lines = { 'ACP MCP servers:' }
+
+        for _, server in ipairs(servers) do
+            table.insert(lines, string.format('- %s', server.name or '<unnamed>'))
+            vim.list_extend(lines, vim.split(vim.inspect(mcp_server_for_display(server)), '\n', { plain = true }))
+        end
+
+        vim.notify(table.concat(lines, '\n'))
+    end, {
+        desc = 'List effective ACP MCP servers',
     })
 
     create('ACPRevealApproval', function(opts)
@@ -371,6 +460,11 @@ function M.ensure()
 
     create('ACPRunSlashCommand', function(opts)
         local name = opts.fargs[1]
+
+        if name == nil or name == '' then
+            error('ACP slash command name is required')
+        end
+
         local command_input = nil
 
         if #opts.fargs > 1 then
@@ -380,9 +474,30 @@ function M.ensure()
         api().run_slash_command(name, command_input)
     end, {
         desc = 'Run an ACP slash command',
-        nargs = '+',
-        complete = function()
-            return slash_command_names()
+        nargs = '*',
+        complete = function(arglead, cmdline)
+            local args = command_args(cmdline)
+            local command_name = args[1]
+            local command = nil
+
+            if command_name ~= nil then
+                for _, current_command in ipairs(slash_commands()) do
+                    if current_command.name == command_name then
+                        command = current_command
+                        break
+                    end
+                end
+            end
+
+            if #args <= 1 or command == nil then
+                return vim.tbl_filter(function(name)
+                    return vim.startswith(name, arglead)
+                end, slash_command_names())
+            end
+
+            return vim.tbl_filter(function(item)
+                return vim.startswith(item, arglead)
+            end, slash_command_input_completions(command))
         end,
     })
 

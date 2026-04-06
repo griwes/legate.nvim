@@ -2,6 +2,7 @@ local buffer = require('acp.buffer')
 local config_option = require('acp.config_option')
 local config = require('acp.config')
 local input = require('acp.input')
+local mcp_runtime = require('acp.mcp_runtime')
 local picker = require('acp.picker')
 local persistence = require('acp.persistence')
 local render = require('acp.render')
@@ -314,7 +315,14 @@ end
 
 ---@param current_session acp.Session
 local function ensure_config_options(current_session)
-    if current_session.remote_id ~= nil and #current_session.config_options > 0 then
+    local has_live_binding = session.transport_remote_id(current_session) ~= nil
+        or current_session.remote_sync_state == 'loaded'
+
+    if not has_live_binding and current_session.remote_sync_state == 'created' then
+        return
+    end
+
+    if has_live_binding and #current_session.config_options > 0 then
         return
     end
 
@@ -323,12 +331,23 @@ local function ensure_config_options(current_session)
 end
 
 ---@param current_session acp.Session
-local function ensure_slash_commands(current_session)
-    if current_session.remote_id ~= nil
+---@param opts? { allow_establish?: boolean }
+local function ensure_slash_commands(current_session, opts)
+    local transport_remote_id = session.transport_remote_id(current_session)
+
+    if transport_remote_id == nil and current_session.remote_sync_state == 'created' then
+        return
+    end
+
+    if transport_remote_id ~= nil
         and current_session.turn_id == 0
         and current_session.status ~= 'cancelled'
         and #current_session.available_commands > 0
     then
+        return
+    end
+
+    if opts ~= nil and opts.allow_establish == false then
         return
     end
 
@@ -383,6 +402,12 @@ local function submit_session_prompt(current_session, prompt)
 
     if prompt == '' then
         error('ACP prompt is empty')
+    end
+
+    if current_session.remote_sync_state == 'load_failed' then
+        error(
+            'ACP session is in load_failed recovery state; retry `:ACPLoadSession` or create a fresh remote with `:ACPRebindSession`'
+        )
     end
 
     session.set_draft_prompt(current_session, prompt)
@@ -534,21 +559,33 @@ function M.approval_lines(session_id)
 end
 
 ---Persist all local ACP sessions to disk.
----@return acp.SessionPersistencePayload
+---@return boolean, acp.SessionPersistencePayload|string
 function M.save_sessions()
     store_draft(session.current())
 
     local payload = session.snapshot()
-    persistence.save(payload)
+    local ok, err = persistence.save(payload)
 
-    return payload
+    if not ok then
+        vim.notify(string.format('Failed to save ACP sessions: %s', err), vim.log.levels.ERROR)
+        return false, err
+    end
+
+    return true, payload
 end
 
 ---Restore local ACP sessions from disk.
 ---@param opts? { open_chat?: boolean }
 ---@return acp.Session[]
 function M.restore_sessions(opts)
-    local restored = session.restore(persistence.load())
+    local persisted_enabled = config.get().persist_sessions
+    local persisted = persisted_enabled and persistence.load() or nil
+
+    if persisted_enabled and persisted == nil then
+        return {}
+    end
+
+    local restored = session.restore(persisted)
     local current_session = session.current()
     local should_open = opts ~= nil and opts.open_chat or false
     local has_buffer = buffer.get() ~= nil
@@ -563,8 +600,12 @@ function M.restore_sessions(opts)
         return restored
     end
 
-    if should_open and config.get().auto_create_session then
-        M.open_chat()
+    if should_open then
+        if #restored > 0 or config.get().auto_create_session then
+            M.open_chat()
+        elseif not has_buffer then
+            buffer.open()
+        end
     elseif has_buffer then
         buffer.clear()
     end
@@ -630,8 +671,6 @@ function M.slash_command_names(session_id)
     if current_session == nil then
         return {}
     end
-
-    ensure_slash_commands(current_session)
 
     local names = {}
 
@@ -837,8 +876,7 @@ function M.select_approval_option(selection, session_id)
             if pending ~= nil and pending.request_id == request_id then
                 selection = option_id
                 if session.pending_approval(current_session) ~= pending then
-                    session.clear_pending_approval_by_request_id(current_session, pending.request_id)
-                    table.insert(current_session.pending_approvals, 1, pending)
+                    pending = session.promote_pending_approval_by_request_id(current_session, pending.request_id) or pending
                 end
             end
         end
@@ -1045,14 +1083,25 @@ function M.cancel_prompt()
         return nil
     end
 
-    if current_session ~= nil and (waiting_session == nil or waiting_session.id ~= current_session.id) then
+    if current_session ~= nil then
         store_draft(current_session)
     end
 
-    local target_session = waiting_session or current_session
+    local target_session = nil
+
+    if current_session ~= nil and current_session.status == 'waiting' then
+        target_session = current_session
+    else
+        target_session = waiting_session
+    end
 
     if target_session == nil or target_session.status ~= 'waiting' then
         return nil
+    end
+
+    if current_session ~= nil and current_session.id ~= target_session.id then
+        M.select_session(target_session.id)
+        current_session = session.current()
     end
 
     local prompt = target_session.pending_prompt or target_session.draft_prompt or ''
@@ -1086,6 +1135,18 @@ function M.set_prompt(text)
 
     input.set_prompt(bufnr, text)
     session.set_draft_prompt(current_session, text)
+end
+
+---Return the configured ACP MCP servers without runtime injection side effects.
+---@return table[]
+function M.mcp_servers()
+    return mcp_runtime.static_servers()
+end
+
+---Return the effective ACP MCP servers including runtime injection.
+---@return table[]
+function M.effective_mcp_servers()
+    return mcp_runtime.effective_servers({ passive = false })
 end
 
 ---Return the effective ACP terminal backend name.

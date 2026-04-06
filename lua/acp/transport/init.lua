@@ -4,6 +4,8 @@ local context = require('acp.transport.context')
 local fs = require('acp.fs')
 local handlers = require('acp.handlers')
 local input = require('acp.input')
+local mcp_guidance = require('acp.mcp_guidance')
+local mcp_runtime = require('acp.mcp_runtime')
 local methods = require('acp.methods')
 local permission = require('acp.handlers.permission')
 local render = require('acp.render')
@@ -58,9 +60,9 @@ local state = {
 ---@param current_session acp.Session
 ---@return boolean
 local function should_rebind_connection(current_session)
-    return session.transport_remote_id(current_session) ~= nil
-        and current_session.turn_id > 0
-        and current_session.status ~= 'waiting'
+    return client ~= nil
+        and session.transport_remote_id(current_session) ~= nil
+        and session.transport_remote_id(current_session) ~= state.bound_remote_session_id
 end
 
 ---@param generation integer
@@ -113,20 +115,24 @@ local function active_request_session(params)
     local session_id = params.sessionId
     local current_session = state.active_session
 
+    local current_transport_remote_id = current_session ~= nil and session.transport_remote_id(current_session) or nil
+
     if
         current_session ~= nil
         and current_session.status == 'waiting'
-        and (session_id == nil or current_session.remote_id == session_id)
+        and ((session_id == nil) or (current_transport_remote_id ~= nil and current_transport_remote_id == session_id))
     then
         return current_session
     end
 
     local waiting_session = session.waiting()
 
+    local waiting_transport_remote_id = waiting_session ~= nil and session.transport_remote_id(waiting_session) or nil
+
     if
         waiting_session ~= nil
         and waiting_session.status == 'waiting'
-        and (session_id == nil or waiting_session.remote_id == session_id)
+        and ((session_id == nil) or (waiting_transport_remote_id ~= nil and waiting_transport_remote_id == session_id))
     then
         return waiting_session
     end
@@ -231,19 +237,21 @@ local function resolve_cwd(raw_path)
     return vim.fn.fnamemodify(path, ':p')
 end
 
+---@param cwd_override string?
 ---@param session_id string?
 ---@return table
-local function session_request_params(session_id)
+local function session_request_params(cwd_override, session_id)
+    local cwd = resolve_cwd(cwd_override or config.get().cwd)
     local params = {
-        cwd = resolve_cwd(config.get().cwd),
-        mcpServers = config.get().mcp_servers,
+        cwd = cwd,
+        mcpServers = mcp_runtime.effective_servers(),
     }
 
     if session_id ~= nil then
         params.sessionId = session_id
     end
 
-    return params
+    return params, cwd
 end
 
 ---@param current_session? acp.Session
@@ -324,7 +332,6 @@ end
 local function finish_turn(current_session, stop_reason)
     session.finish_prompt(current_session, stop_reason)
     rerender(current_session)
-    reset_connection()
 end
 
 ---@param role acp.MessageRole
@@ -369,7 +376,13 @@ local function prompt_blocks(current_session, prompt)
         local message = current_session.messages[index]
 
         if message.role ~= 'status' then
-            vim.list_extend(history, format_history_message(message.role, message.text))
+            local text = message.text
+
+            if message.role == 'user' then
+                text = mcp_guidance.prepend(text, state.agent_capabilities)
+            end
+
+            vim.list_extend(history, format_history_message(message.role, text))
             table.insert(history, '')
         end
     end
@@ -399,16 +412,18 @@ end
 ---@param prompt string
 ---@return acp.ContentBlock[]
 local function prompt_content(current_session, prompt)
+    local guided_prompt = mcp_guidance.prepend(prompt, state.agent_capabilities)
+
     if state.loaded_existing_session then
         return {
             {
                 type = 'text',
-                text = prompt,
+                text = guided_prompt,
             },
         }
     end
 
-    return prompt_blocks(current_session, prompt)
+    return prompt_blocks(current_session, guided_prompt)
 end
 
 ---@return acp.TransportContext
@@ -607,8 +622,8 @@ local function establish_session(current_session, opts)
         if state.agent_capabilities ~= nil and state.agent_capabilities.loadSession then
             state.active_session = current_session
             state.loading_existing_session = true
-            local result, rpc_error =
-                ensure_client():request_sync(methods.SESSION_LOAD, session_request_params(previous_transport_remote_id))
+            local params, cwd = session_request_params(current_session.cwd, previous_transport_remote_id)
+            local result, rpc_error = ensure_client():request_sync(methods.SESSION_LOAD, params)
             state.loading_existing_session = false
 
             if rpc_error == nil then
@@ -618,6 +633,7 @@ local function establish_session(current_session, opts)
                 state.active_session = current_session
                 state.loaded_existing_session = true
                 session.set_remote_sync_state(current_session, 'loaded')
+                session.set_cwd(current_session, cwd)
                 session.set_available_commands(current_session, {})
                 session.set_config_options(current_session, result.configOptions or {})
                 drain_session_updates(current_session, previous_transport_remote_id)
@@ -629,7 +645,11 @@ local function establish_session(current_session, opts)
             state.bound_remote_session_id = nil
             state.active_session = nil
             state.loaded_existing_session = false
-            session.set_remote_sync_state(current_session, 'load_failed', rpc_error.message)
+            session.set_transport_remote_id(current_session, nil, 'load_failed', rpc_error.message)
+
+            if previous_remote_id ~= nil then
+                error(rpc_error.message)
+            end
 
             if force_load then
                 error(rpc_error.message)
@@ -641,14 +661,15 @@ local function establish_session(current_session, opts)
             state.bound_remote_session_id = nil
             state.active_session = nil
             state.loaded_existing_session = false
-            session.set_remote_sync_state(current_session, 'load_failed', message)
+            session.set_transport_remote_id(current_session, nil, 'load_failed', message)
             error(message)
         end
     end
 
     state.active_session = current_session
     state.creating_new_session = true
-    local result, rpc_error = ensure_client():request_sync(methods.SESSION_NEW, session_request_params())
+    local params, cwd = session_request_params()
+    local result, rpc_error = ensure_client():request_sync(methods.SESSION_NEW, params)
     state.creating_new_session = false
 
     if rpc_error ~= nil then
@@ -678,6 +699,7 @@ local function establish_session(current_session, opts)
     state.loaded_existing_session = false
 
     session.set_remote_id(current_session, result.sessionId, 'created')
+    session.set_cwd(current_session, cwd)
     session.set_config_options(current_session, result.configOptions or {})
     session.set_available_commands(current_session, {})
     drain_session_updates(current_session, result.sessionId)

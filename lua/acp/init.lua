@@ -47,7 +47,7 @@ function M.setup(opts)
     configure_autocmds()
     surface.refresh_highlights()
 
-    if M.config.restore_sessions_on_setup then
+    if M.config.persist_sessions and M.config.restore_sessions_on_setup then
         api.restore_sessions({
             open_chat = M.config.auto_open_on_setup,
         })

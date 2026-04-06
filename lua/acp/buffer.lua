@@ -170,6 +170,10 @@ end
 
 ---@param bufnr integer
 local function attach_hover_lsp(bufnr)
+    if not config.get().enable_hover_lsp then
+        return
+    end
+
     local ok, hover_lsp = pcall(require, 'acp.hover_lsp')
 
     if ok and type(hover_lsp.attach) == 'function' then

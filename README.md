@@ -32,7 +32,7 @@ Example local `lazy.nvim` spec:
 - `:ACPConfigOptions` lists ACP session config options for the current local session
 - `:ACPSlashCommands` lists ACP slash commands for the current local session
 - `:ACPRevealApproval <ordinal>` opens or reuses the shared chat buffer and jumps to a recorded approval entry
-- `:ACPSelectApprovalOption <option-id>` resolves the current inline ACP approval by option id
+- `:ACPSelectApprovalOption <request-id>:<option-id>` resolves the current inline ACP approval by unambiguous selector; bare option ids are still accepted when only one approval is pending
 - `:ACPPickApproval` reveals a recorded approval through `vim.ui.select`
 - `:ACPSelectSession <id>` switches the shared chat buffer to a local ACP session
 - `:ACPPickSession` switches the shared chat buffer through `vim.ui.select`
@@ -68,6 +68,10 @@ Example local `lazy.nvim` spec:
 - ACP now advertises `fs/read_text_file` and `fs/write_text_file`, reads from unsaved open buffers when possible, and writes through open buffers so Neovim state and disk stay aligned
 - ACP now advertises `terminal = true` and handles `terminal/create`, `terminal/output`, `terminal/wait_for_exit`, `terminal/kill`, and `terminal/release` through either a native hidden-process backend or an optional `terminal-manager.nvim` adapter
 - the native backend remains the default, and the `terminal-manager.nvim` backend keeps ACP `terminal/release` scoped to ACP handle invalidation instead of deleting the terminal-manager terminal object
+- ACP can now auto-inject the live `mcp.nvim` endpoint into its configured `mcp_servers` list when `enable_mcp_nvim = true` (opt-in)
+- this gives ACP/Codex a stable local MCP surface for buffer-id/file-path-based edits and terminal lifecycle routing, while still leaving ACP-native terminal methods available when the agent actually uses them
+- ACP can now also prepend `neovim` MCP routing guidance into submitted prompts when `mcp_nvim_guidance = true` (default)
+- that guidance tells the agent to prefer the identifier-based `neovim/editor/...` tools and to use `neovim/terminal/...` tools only when ACP-native terminal methods are not actually being used
 - follow-up turns rebind the transport channel between prompts to fail closed on stale cross-turn updates
 - when the agent advertises `loadSession`, follow-up turns resume the existing remote ACP session with `session/load`
 - when the agent does not advertise `loadSession`, follow-up turns fall back to a fresh remote session plus explicit transcript replay in the prompt content
@@ -121,7 +125,7 @@ require('acp').setup({
 })
 ```
 
-When an approval is pending, ACP keeps it visible above the prompt section until it is explicitly resolved or the underlying request becomes stale. Resolve it through the inline affordance or `:ACPSelectApprovalOption <option-id>`.
+When an approval is pending, ACP keeps it visible above the prompt section until it is explicitly resolved or the underlying request becomes stale. Resolve it through the inline affordance or `:ACPSelectApprovalOption <request-id>:<option-id>`.
 
 ## Session Persistence
 

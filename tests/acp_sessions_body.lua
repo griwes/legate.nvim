@@ -1,3 +1,5 @@
+local persistence = require('acp.persistence')
+
 it('loads and exposes setup', function()
     assert.are.equal('function', type(plugin.setup))
     assert.are.equal('function', type(api.open_chat))
@@ -179,6 +181,84 @@ it('invokes vim.ui.select for ACP session picking', function()
     restore()
 end)
 
+
+it('preserves the next approval ordinal across restore when pending approvals were not persisted', function()
+    local session = require('acp.session')
+
+    session.restore({
+        sessions = {
+            {
+                id = 'acp:9',
+                ordinal = 1,
+                status = 'idle',
+                messages = {},
+                approval_entries = {
+                    {
+                        ordinal = 1,
+                        title = 'Existing approval',
+                        outcome = 'cancelled',
+                        source = 'default',
+                        stream_key = 'approval:1',
+                    },
+                },
+                pending_approvals = {},
+            },
+        },
+        current_id = 'acp:9',
+        next_ordinal = 10,
+        next_pending_approval_ordinal = 4,
+    })
+
+    assert.are.equal(4, session.snapshot().next_pending_approval_ordinal)
+end)
+
+it('restores pending approvals in persisted ordinal order', function()
+    local restored = require('acp.session').restore({
+        sessions = {
+            {
+                id = 'acp:9',
+                ordinal = 1,
+                status = 'idle',
+                messages = {},
+                approval_entries = {
+                    {
+                        ordinal = 1,
+                        title = 'Existing approval',
+                        outcome = 'cancelled',
+                        source = 'default',
+                        stream_key = 'approval:1',
+                    },
+                },
+                pending_approvals = {
+                    {
+                        request_id = 'req-later',
+                        ordinal = 3,
+                        title = 'Later approval',
+                        created_at = 30,
+                    },
+                    {
+                        request_id = 'req-first',
+                        ordinal = 2,
+                        title = 'First approval',
+                        created_at = 20,
+                    },
+                },
+            },
+        },
+        current_id = 'acp:9',
+        next_ordinal = 10,
+        })
+
+    assert.are.equal('acp:9', api.current_session().id)
+    assert.are.equal('acp:9', restored[1].id)
+    assert.are.same({ 'req-first', 'req-later' }, vim.tbl_map(function(item)
+        return item.request_id
+    end, api.pending_approvals()))
+    assert.are.same({ 2, 3 }, vim.tbl_map(function(item)
+        return item.ordinal
+    end, api.pending_approvals()))
+end)
+
 it('selects a local ACP session through the picker surface', function()
     api.open_chat()
     local first = api.current_session()
@@ -279,12 +359,13 @@ it('loads an existing remote ACP session explicitly when the agent supports sess
     local second_client = fake_client
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
-    assert.is_true(first_client.closed)
+    assert.is_false(first_client.closed)
     assert.are.equal('sess_123', current_session.remote_id)
     assert.are.equal('loaded', current_session.remote_sync_state)
+    assert.is_nil(current_session.remote_sync_error)
     assert.are.equal(2, #current_session.available_commands)
-    assert.are.equal('session/load', second_client.sync_calls[3].method)
-    assert.are.equal('sess_123', second_client.sync_calls[3].params.sessionId)
+    assert.are.equal('session/load', second_client.sync_calls[4].method)
+    assert.are.equal('sess_123', second_client.sync_calls[4].params.sessionId)
     assert.are.equal(
         'ACP  acp:1  idle  sync=loaded  remote=sess_123',
         vim.api.nvim_get_option_value('winbar', {
@@ -327,7 +408,7 @@ it('rejects explicitly loading an already-bound ACP session when session/load is
     )
 end)
 
-it('rebinds through session/new after an explicit load failure cleared the prior fast-path binding', function()
+it('blocks prompt submission after an explicit load failure until the user explicitly recovers the session', function()
     api.open_chat()
     local current_session = api.load_session()
 
@@ -339,10 +420,23 @@ it('rebinds through session/new after an explicit load failure cleared the prior
     end, 'ACP agent does not advertise session/load support for session acp:1')
 
     api.set_prompt('after failed reload')
+
+    assert.has_error(function()
+        api.submit_prompt()
+    end, 'ACP session is in load_failed recovery state; retry `:ACPLoadSession` or create a fresh remote with `:ACPRebindSession`')
+
+    assert.are.equal('sess_123', current_session.remote_id)
+    assert.is_nil(current_session.transport_remote_id)
+    assert.are.equal('load_failed', current_session.remote_sync_state)
+    assert.are.equal(0, #fake_client.async_calls)
+    assert.are.equal('session/new', fake_client.sync_calls[3].method)
+
+    api.rebind_session()
     api.submit_prompt()
 
     assert.are.equal('sess_124', current_session.remote_id)
     assert.are.equal('created', current_session.remote_sync_state)
+    assert.is_nil(current_session.remote_sync_error)
     assert.are.equal('session/new', fake_client.sync_calls[4].method)
     assert.are.equal('sess_124', fake_client.async_calls[1].params.sessionId)
 end)
@@ -370,9 +464,10 @@ it('surfaces session/load runtime failure instead of silently rebinding to a fre
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
     assert.are.equal(first_remote_id, current_session.remote_id)
+    assert.is_nil(current_session.transport_remote_id)
     assert.are.equal('load_failed', current_session.remote_sync_state)
-    assert.are.equal(3, #fake_client.sync_calls)
-    assert.are.equal('session/load', fake_client.sync_calls[3].method)
+    assert.are.equal(4, #fake_client.sync_calls)
+    assert.are.equal('session/load', fake_client.sync_calls[4].method)
     assert.are.equal('session/load failed', current_session.remote_sync_error)
     assert.are.same(fake_available_commands, current_session.available_commands)
     assert.are.equal(
@@ -583,7 +678,8 @@ it('saves and restores multiple local ACP sessions from disk', function()
     api.set_prompt('second draft')
     api.select_session(first.id)
 
-    api.save_sessions()
+    local ok = api.save_sessions()
+    assert.is_true(ok)
     api.clear()
 
     plugin.setup({
@@ -628,7 +724,8 @@ it('restores waiting sessions as cancelled local sessions with the prompt moved 
 
     assert.are.equal('waiting', current_session.status)
 
-    api.save_sessions()
+    local ok = api.save_sessions()
+    assert.is_true(ok)
     api.clear()
 
     plugin.setup({
@@ -654,7 +751,8 @@ it('restores persisted ACP sessions during setup when configured', function()
     api.open_chat()
     api.set_prompt('restored on setup')
     local current_id = api.current_session().id
-    api.save_sessions()
+    local ok = api.save_sessions()
+    assert.is_true(ok)
     api.clear()
 
     plugin.setup({
@@ -666,6 +764,23 @@ it('restores persisted ACP sessions during setup when configured', function()
     assert.are.equal('restored on setup', api.current_session().draft_prompt)
 end)
 
+it('restores sessions with open_chat=true and auto_create_session when no state exists', function()
+    local state_file = temp_path('acp-restore-open-chat-no-state.json')
+
+    plugin.setup({
+        session_state_file = state_file,
+        auto_create_session = true,
+    })
+
+    local restored = api.restore_sessions({
+        open_chat = true,
+    })
+
+    assert.are.same({}, restored)
+    assert.is_not_nil(api.current_session())
+    assert.are.equal('acp:1', api.current_session().id)
+end)
+
 it('restores sessions with open_chat=true without clobbering existing buffer draft prompt', function()
     local state_file = temp_path('acp-restore-open-chat-buffer.json')
 
@@ -674,7 +789,8 @@ it('restores sessions with open_chat=true without clobbering existing buffer dra
     })
     api.open_chat()
     api.set_prompt('persisted draft')
-    api.save_sessions()
+    local ok = api.save_sessions()
+    assert.is_true(ok)
     api.clear()
 
     plugin.setup({
@@ -689,6 +805,38 @@ it('restores sessions with open_chat=true without clobbering existing buffer dra
 
     assert.are.equal('persisted draft', api.current_session().draft_prompt)
     assert.are.equal('persisted draft', api.get_prompt())
+end)
+
+it('returns a save failure so callers can detect persistence errors', function()
+    local original_save = persistence.save
+    local notifications = {}
+    local original_notify = vim.notify
+
+    local ok, err = xpcall(function()
+        plugin.setup()
+        api.open_chat()
+
+        local original_module_save = package.loaded['acp.persistence'].save
+        package.loaded['acp.persistence'].save = function()
+            return false, 'disk full'
+        end
+
+        vim.notify = function(message)
+            table.insert(notifications, message)
+        end
+
+        local saved, save_err = api.save_sessions()
+
+        assert.is_false(saved)
+        assert.are.equal('disk full', save_err)
+        assert.are.same({ 'Failed to save ACP sessions: disk full' }, notifications)
+    end, debug.traceback)
+
+    persistence.save = original_save
+    package.loaded['acp.persistence'].save = original_save
+    vim.notify = original_notify
+
+    assert.is_true(ok, err)
 end)
 
 it('does not implicitly load restored remote sessions when submitting the next prompt', function()
@@ -917,4 +1065,64 @@ it('ignores corrupted persisted session payloads whose sessions field is not a l
     assert.is_true(ok, restored)
     assert.are.same({}, restored)
     assert.are.equal(0, #api.list_sessions())
+end)
+
+it('returns nil when the persisted session file cannot be decoded', function()
+    local state_file = temp_path('acp-load-invalid-json.json')
+    local notifications = {}
+    local original_notify = vim.notify
+    local persistence = require('acp.persistence')
+
+    vim.fn.writefile({ '{not valid json' }, state_file)
+
+    local ok, err = xpcall(function()
+        vim.notify = function(message, level)
+            table.insert(notifications, { message = message, level = level })
+        end
+
+        plugin.setup({
+            session_state_file = state_file,
+        })
+
+        assert.is_nil(persistence.load())
+        assert.are.equal(1, #notifications)
+        assert.are.equal(vim.log.levels.ERROR, notifications[1].level)
+        assert.is_truthy(notifications[1].message:find(state_file, 1, true))
+        assert.is_truthy(notifications[1].message:find('Failed to restore ACP sessions from ', 1, true))
+    end, debug.traceback)
+
+    vim.notify = original_notify
+
+    assert.is_true(ok, err)
+end)
+
+it('notifies and skips restore when the persisted session file cannot be decoded', function()
+    local state_file = temp_path('acp-restore-invalid-json.json')
+    local notifications = {}
+    local original_notify = vim.notify
+
+    vim.fn.writefile({ '{not valid json' }, state_file)
+
+    local ok, err = xpcall(function()
+        vim.notify = function(message, level)
+            table.insert(notifications, { message = message, level = level })
+        end
+
+        plugin.setup({
+            session_state_file = state_file,
+        })
+
+        local restored = api.restore_sessions()
+
+        assert.are.same({}, restored)
+        assert.are.equal(0, #api.list_sessions())
+        assert.are.equal(1, #notifications)
+        assert.are.equal(vim.log.levels.ERROR, notifications[1].level)
+        assert.is_truthy(notifications[1].message:find(state_file, 1, true))
+        assert.is_truthy(notifications[1].message:find('Failed to restore ACP sessions from ', 1, true))
+    end, debug.traceback)
+
+    vim.notify = original_notify
+
+    assert.is_true(ok, err)
 end)

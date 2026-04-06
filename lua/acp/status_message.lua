@@ -239,7 +239,7 @@ local function raw_mcp_tool_name(raw_input)
         or non_empty_string(raw_input.server)
 
     if tool_name ~= nil then
-        if server_name ~= nil then
+        if server_name ~= nil and not vim.startswith(tool_name, server_name .. '/') then
             return string.format('%s/%s', server_name, tool_name)
         end
 
@@ -389,6 +389,25 @@ local function summarize_tool_content(content, opts)
     return nil
 end
 
+---@param text string?
+---@return boolean
+local function opaque_text_payload(text)
+    local normalized = non_empty_string(text)
+
+    if normalized == nil then
+        return false
+    end
+
+    local looks_like_json = (vim.startswith(normalized, '{') and vim.endswith(normalized, '}'))
+        or (vim.startswith(normalized, '[') and vim.endswith(normalized, ']'))
+
+    if not looks_like_json then
+        return false
+    end
+
+    return pcall(vim.json.decode, normalized)
+end
+
 ---@param icon string
 ---@param state string?
 ---@param text string
@@ -496,20 +515,28 @@ end
 ---@param tool_call acp.ToolCallState
 ---@return string?
 local function tool_hint(tool_call)
-    local suppress_text_hints = raw_mcp_tool_name(tool_call.raw_input) ~= nil and generic_tool_title(tool_call.title)
+    local is_mcp_tool = raw_mcp_tool_name(tool_call.raw_input) ~= nil
 
     if #tool_call.locations > 0 then
         return markdown_location(tool_call.locations[1])
     end
 
     for _, content in ipairs(tool_call.content) do
-        local summary = summarize_tool_content(content, {
-            limit = 80,
-            include_text = not suppress_text_hints,
-        })
+        if not (
+            is_mcp_tool
+            and content.type == 'content'
+            and content.content ~= nil
+            and content.content.type == 'text'
+            and opaque_text_payload(content.content.text)
+        ) then
+            local summary = summarize_tool_content(content, {
+                limit = 80,
+                include_text = true,
+            })
 
-        if summary ~= nil then
-            return summary
+            if summary ~= nil then
+                return summary
+            end
         end
     end
 
@@ -596,7 +623,7 @@ local function pending_approval_option_line(option, index)
         selection_hint =
             string.format('select with `g%d`, `:ACPSelectApprovalOption %d`, or use the inline action', index, index)
     else
-        selection_hint = string.format('select with `:ACPSelectApprovalOption %d` or use the inline action', index)
+        selection_hint = 'select with `:ACPSelectApprovalOption <index>` or use the inline action'
     end
 
     return string.format('%s [%s] (`%s`)  ->  %s', option_name, option_kind, option_id, selection_hint)

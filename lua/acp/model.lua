@@ -88,6 +88,7 @@
 ---@field approval_entries acp.ApprovalEntry[]
 ---@field agent_info acp.AgentInfo?
 ---@field config_options acp.SessionConfigOption[]
+---@field cwd string?
 ---@field turn_id integer
 ---@field created_at integer
 ---@field updated_at integer
@@ -357,6 +358,7 @@
 ---@field session_state_file string
 ---@field terminal_backend acp.TerminalBackendName
 ---@field auto_open_on_setup boolean
+---@field enable_hover_lsp boolean
 ---@field prompt_header string
 ---@field transcript_header string
 ---@field agent_command string[]
@@ -366,6 +368,8 @@
 ---@field client_capabilities acp.ClientCapabilities
 ---@field cwd string?
 ---@field mcp_servers table[]
+---@field enable_mcp_nvim boolean
+---@field mcp_nvim_guidance boolean
 ---@field auth_method string?
 ---@field permission_strategy acp.PermissionStrategy
 ---@field permission_default acp.PermissionOptionKind
@@ -375,6 +379,7 @@
 ---@field current_id string?
 ---@field next_ordinal integer
 ---@field next_message_id integer
+---@field next_pending_approval_ordinal integer
 ---@field sessions acp.Session[]
 
 ---@class acp.PendingApproval

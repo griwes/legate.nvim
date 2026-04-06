@@ -16,7 +16,7 @@ it('submits prompt text from the shared chat buffer into the transcript', functi
     assert.are.equal('session/new', fake_client.sync_calls[3].method)
     assert.are.equal('session/prompt', fake_client.async_calls[1].method)
     assert.are.equal('sess_123', fake_client.async_calls[1].params.sessionId)
-    assert.are.equal('hello from ACP', fake_client.async_calls[1].params.prompt[1].text)
+    assert.is_true(fake_client.async_calls[1].params.prompt[1].text:find('hello from ACP', 1, true) ~= nil)
     assert.are.same({
         fs = {
             readTextFile = true,
@@ -680,11 +680,9 @@ it('renders approval status rows compactly and exposes hover payload content', f
     assert.is_not_nil(expected_label)
     assert.is_true(vim.tbl_contains(preview_lines, string.format('### Approval [1]: %s', expected_label)))
     assert.is_true(vim.tbl_contains(preview_lines, '- Source: `default`'))
-    assert.is_not_nil(
-        vim.tbl_filter(function(line)
-            return line:match('^%- Outcome: `') ~= nil
-        end, preview_lines)[1]
-    )
+    assert.is_not_nil(vim.tbl_filter(function(line)
+        return line:match('^%- Outcome: `') ~= nil
+    end, preview_lines)[1])
 end)
 
 it('keeps the transcript read-only while leaving the prompt naturally editable', function()
@@ -922,21 +920,23 @@ it('submits ACP slash commands through the normal prompt path', function()
     emit_available_commands_update()
 
     local current_session = api.run_slash_command('web', 'agent client protocol')
+    local submitted_text = {}
+
+    for _, block in ipairs(fake_client.async_calls[1].params.prompt) do
+        if block.type == 'text' and type(block.text) == 'string' then
+            table.insert(submitted_text, block.text)
+        end
+    end
+
+    local submitted_prompt_text = table.concat(submitted_text, '\n')
 
     assert.are.equal('session/prompt', fake_client.async_calls[1].method)
-    assert.are.same({
-        sessionId = 'sess_123',
-        prompt = {
-            {
-                type = 'text',
-                text = '/web agent client protocol',
-            },
-        },
-    }, fake_client.async_calls[1].params)
+    assert.are.equal('sess_123', fake_client.async_calls[1].params.sessionId)
+    assert.is_true(submitted_prompt_text:match('/web agent client protocol%s*$') ~= nil)
     assert.are.equal('/web agent client protocol', current_session.pending_prompt)
 end)
 
-it('clears stale ACP slash commands when rebinding to a fresh remote session', function()
+it('keeps slash commands cached across turns until the binding is explicitly refreshed', function()
     local bufnr = api.open_chat()
 
     api.slash_commands()
@@ -960,12 +960,12 @@ it('clears stale ACP slash commands when rebinding to a fresh remote session', f
 
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
-    assert.are.equal('sess_124', current_session.remote_id)
-    assert.are.same({}, current_session.available_commands)
+    assert.are.equal('sess_123', current_session.remote_id)
+    assert.are.same(fake_available_commands, current_session.available_commands)
     assert.is_false(vim.tbl_contains(lines, '## Slash Commands'))
 end)
 
-it('does not run a stale ACP slash command after a completed turn forces a fresh remote session', function()
+it('runs ACP slash commands from the cached command list until the binding is explicitly refreshed', function()
     api.open_chat()
 
     api.slash_commands()
@@ -983,14 +983,13 @@ it('does not run a stale ACP slash command after a completed turn forces a fresh
         stopReason = 'end_turn',
     })
 
-    assert.has_error(function()
-        api.run_slash_command('web', 'should fail')
-    end, 'Unknown ACP slash command: web')
-    assert.are.equal('sess_124', api.current_session().remote_id)
-    assert.are.same({}, api.current_session().available_commands)
+    api.run_slash_command('web', 'should fail')
+
+    assert.are.equal('sess_123', api.current_session().remote_id)
+    assert.are.same(fake_available_commands, api.current_session().available_commands)
 end)
 
-it('refreshes ACP slash command names after a completed turn before command completion uses them', function()
+it('keeps ACP slash command names available across turns while the remote session remains bound', function()
     api.open_chat()
 
     api.slash_commands()
@@ -1010,9 +1009,9 @@ it('refreshes ACP slash command names after a completed turn before command comp
 
     local names = api.slash_command_names()
 
-    assert.are.same({}, names)
-    assert.are.equal('sess_124', api.current_session().remote_id)
-    assert.are.same({}, api.current_session().available_commands)
+    assert.are.same({ 'web', 'test' }, names)
+    assert.are.equal('sess_123', api.current_session().remote_id)
+    assert.are.same(fake_available_commands, api.current_session().available_commands)
 end)
 
 it('invokes ACP slash commands through picker selection and input', function()
@@ -1038,21 +1037,52 @@ it('invokes ACP slash commands through picker selection and input', function()
     restore_select()
 
     assert.are.equal('session/prompt', fake_client.async_calls[1].method)
-    assert.are.equal('/web acp slash commands', fake_client.async_calls[1].params.prompt[1].text)
+    assert.is_true(fake_client.async_calls[1].params.prompt[1].text:match('/web acp slash commands%s*$') ~= nil)
+end)
+
+it('applies config_option_update emitted during session/load', function()
+    fake_supports_load = true
+    api.open_chat()
+
+    api.set_prompt('first turn')
+    api.submit_prompt()
+    fake_client:resolve({
+        stopReason = 'end_turn',
+    })
+
+    fake_on_load = function(client, params)
+        client:emit_notification('session/update', {
+            sessionId = params.sessionId,
+            update = {
+                sessionUpdate = 'config_option_update',
+                configOptions = {
+                    {
+                        id = 'mode',
+                        name = 'Mode',
+                        description = 'Controls how the agent requests permission',
+                        category = 'mode',
+                        type = 'select',
+                        currentValue = 'code',
+                        options = {
+                            { value = 'ask', name = 'Ask' },
+                            { value = 'code', name = 'Code' },
+                        },
+                    },
+                },
+            },
+        })
+    end
+
+    api.load_session()
+
+    local config_options = api.config_options()
+
+    assert.are.equal('code', config_options[1].currentValue)
 end)
 
 it('applies available_commands_update emitted during session/load', function()
     fake_supports_load = true
     api.open_chat()
-
-    api.slash_commands()
-    fake_client:emit_notification('session/update', {
-        sessionId = 'sess_123',
-        update = {
-            sessionUpdate = 'available_commands_update',
-            availableCommands = vim.deepcopy(fake_available_commands),
-        },
-    })
 
     api.set_prompt('first turn')
     api.submit_prompt()
@@ -1076,6 +1106,8 @@ it('applies available_commands_update emitted during session/load', function()
         })
     end
 
+    api.load_session()
+
     local commands = api.slash_commands()
     local command_lines = api.slash_command_lines()
     local slash_call = api.run_slash_command('resume')
@@ -1086,11 +1118,11 @@ it('applies available_commands_update emitted during session/load', function()
     assert.is_nil(commands[1].input)
     assert.are.equal('/resume  Resume-only command', command_lines[1])
     assert.are.equal('session/prompt', last_call.method)
-    assert.are.equal('/resume', last_call.params.prompt[1].text)
+    assert.is_true(last_call.params.prompt[1].text:match('/resume%s*$') ~= nil)
     assert.are.equal('/resume', slash_call.pending_prompt)
 end)
 
-it('reloads slash commands for a remote-bound session whose cache is empty', function()
+it('does not reload slash commands for a remote-bound session whose cache is empty without an explicit load', function()
     fake_supports_load = true
     api.open_chat()
     api.set_prompt('first turn')
@@ -1119,15 +1151,9 @@ it('reloads slash commands for a remote-bound session whose cache is empty', fun
 
     local commands = api.slash_commands()
 
-    assert.are.same({
-        {
-            name = 'resume',
-            description = 'Resume-only command',
-        },
-    }, commands)
-    assert.are.same({ 'resume' }, api.slash_command_names())
+    assert.are.same({}, commands)
+    assert.are.same({}, api.slash_command_names())
 end)
-
 
 it('does not submit an ACP slash command from the picker when required input is blank', function()
     local notifications = {}
@@ -1333,6 +1359,138 @@ it('summarizes generic MCP tool calls without leaking raw JSON arguments', funct
     end))
     assert.is_false(vim.iter(lines):any(function(line)
         return line:find('{"path"', 1, true) ~= nil
+    end))
+end)
+
+it('keeps readable MCP response text in compact tool summary lines', function()
+    local bufnr = api.open_chat()
+
+    api.set_prompt('use readable mcp response')
+    api.submit_prompt()
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call',
+            toolCallId = 'tool_mcp_plain_text',
+            title = 'mcp tool call',
+            status = 'completed',
+            content = {
+                {
+                    type = 'content',
+                    content = {
+                        type = 'text',
+                        text = 'Terminal cleared successfully',
+                    },
+                },
+            },
+            rawInput = {
+                server = 'neovim',
+                tool = 'neovim/terminal/clear',
+                arguments = {
+                    terminal_id = 'term-1',
+                },
+            },
+        },
+    })
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+    assert.is_true(vim.iter(lines):any(function(line)
+        return line:find('✓ Tool: `neovim/terminal/clear`  ', 1, true) ~= nil
+            and line:find('Terminal cleared successfully', 1, true) ~= nil
+            and line:find('neovim/neovim/terminal/clear', 1, true) == nil
+    end))
+end)
+
+it('keeps bracketed non-json MCP response text in compact tool summary lines', function()
+    local bufnr = api.open_chat()
+
+    api.set_prompt('use bracketed mcp response')
+    api.submit_prompt()
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call',
+            toolCallId = 'tool_mcp_bracketed_text',
+            title = 'mcp tool call',
+            status = 'completed',
+            content = {
+                {
+                    type = 'content',
+                    content = {
+                        type = 'text',
+                        text = '[done]',
+                    },
+                },
+            },
+            rawInput = {
+                server = 'neovim',
+                tool = 'neovim/terminal/clear',
+                arguments = {
+                    terminal_id = 'term-1',
+                },
+            },
+        },
+    })
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+    assert.is_true(vim.iter(lines):any(function(line)
+        return line:find('✓ Tool: `neovim/terminal/clear`  ', 1, true) ~= nil
+            and line:find('[done]', 1, true) ~= nil
+            and line:find('neovim/neovim/terminal/clear', 1, true) == nil
+    end))
+end)
+
+it('does not include raw MCP response JSON in compact tool summary lines', function()
+    local bufnr = api.open_chat()
+
+    api.set_prompt('use mcp response')
+    api.submit_prompt()
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call',
+            toolCallId = 'tool_mcp_response',
+            title = 'mcp tool call',
+            status = 'completed',
+            content = {
+                {
+                    type = 'content',
+                    content = {
+                        type = 'text',
+                        text = '{"terminal_id":"term-1","stdout":"hello"}',
+                    },
+                },
+            },
+            rawInput = {
+                server = 'neovim',
+                tool = 'neovim/terminal/output',
+                arguments = {
+                    terminal_id = 'term-1',
+                },
+            },
+            rawOutput = {
+                content = {
+                    {
+                        type = 'text',
+                        text = '{"terminal_id":"term-1","stdout":"hello"}',
+                    },
+                },
+            },
+        },
+    })
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+    local summary = vim.iter(lines):find(function(line)
+        return line:find('neovim/terminal/output', 1, true) ~= nil
+    end)
+
+    assert.is_not_nil(summary)
+    assert.is_true(summary:find('Tool:', 1, true) ~= nil or summary:find('mcp tool call', 1, true) ~= nil)
+    assert.is_false(vim.iter(lines):any(function(line)
+        return line ~= summary and (line:find('term%-1', 1) ~= nil or line:find('stdout', 1, true) ~= nil)
     end))
 end)
 

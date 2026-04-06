@@ -212,7 +212,7 @@ it('resolves the current inline ACP approval through the command surface', funct
     assert.is_true(vim.tbl_contains(lines, '✓ Approval [1] Run command'))
 end)
 
-it('completes approval option indexes alongside option ids', function()
+it('completes bare approval option ids for a single pending request without numeric aliases', function()
     plugin.setup({
         permission_strategy = 'select',
     })
@@ -243,17 +243,57 @@ it('completes approval option indexes alongside option ids', function()
         builtin = false,
     })['ACPSelectApprovalOption']
 
-    assert.are.same(
-        {
-            'acp:1:approval_completion:1:allow-once',
-            'acp:1:approval_completion:1:reject-once',
-            '1',
-            'allow-once',
-            '2',
-            'reject-once',
+    assert.are.same({
+        'allow-once',
+        'reject-once',
+    }, definition.complete('', 'ACPSelectApprovalOption ', 0))
+end)
+
+
+it('completes queued approval options for every pending request', function()
+    plugin.setup({
+        permission_strategy = 'select',
+    })
+    api.open_chat()
+    api.set_prompt('approval command queued completion')
+    api.submit_prompt()
+    fake_client:emit_request('session/request_permission', {
+        sessionId = 'sess_123',
+        toolCall = {
+            toolCallId = 'approval_completion_first',
+            title = 'First command',
         },
-        definition.complete('', 'ACPSelectApprovalOption ', 0)
-    )
+        options = {
+            {
+                optionId = 'allow-first',
+                name = 'Allow first',
+                kind = 'allow_once',
+            },
+        },
+    })
+    fake_client:emit_request('session/request_permission', {
+        sessionId = 'sess_123',
+        toolCall = {
+            toolCallId = 'approval_completion_second',
+            title = 'Second command',
+        },
+        options = {
+            {
+                optionId = 'allow-second',
+                name = 'Allow second',
+                kind = 'allow_once',
+            },
+        },
+    })
+
+    local definition = vim.api.nvim_get_commands({
+        builtin = false,
+    })['ACPSelectApprovalOption']
+
+    assert.are.same({
+        'acp:1:approval_completion_first:1:allow-first',
+        'acp:1:approval_completion_second:1:allow-second',
+    }, definition.complete('', 'ACPSelectApprovalOption ', 0))
 end)
 
 it('resolves a pending inline approval through the command surface even when another session is selected', function()
@@ -455,6 +495,64 @@ it('lists ACP slash commands through the command surface', function()
     assert.are.same({
         '/web  Search the web for information  input=query to search for\n/test  Run tests for the current project',
     }, notifications)
+end)
+
+it('lists ACP MCP servers with redacted env values through the command surface', function()
+    local notifications = {}
+    local original_notify = vim.notify
+    local original_effective_mcp_servers = api.effective_mcp_servers
+    local call_count = 0
+
+    api.effective_mcp_servers = function(...)
+        assert.are.same({}, { ... })
+        call_count = call_count + 1
+        return {
+            {
+                name = 'stdio-map',
+                type = 'stdio',
+                command = 'node',
+                args = { 'server.js' },
+                env = {
+                    API_KEY = 'secret',
+                    TOKEN = 'top-secret',
+                },
+            },
+            {
+                name = 'stdio-list',
+                type = 'stdio',
+                command = 'python',
+                args = { '-m', 'server' },
+                env = {
+                    { name = 'PASSWORD', value = 'classified' },
+                },
+            },
+        }
+    end
+
+    vim.notify = function(message)
+        table.insert(notifications, message)
+    end
+
+    local ok, err = pcall(vim.cmd, 'ACPMcpServers')
+
+    vim.notify = original_notify
+    api.effective_mcp_servers = original_effective_mcp_servers
+
+    assert.is_true(ok, err)
+    assert.are.equal(1, call_count)
+    assert.are.equal(1, #notifications)
+    assert.is_true(notifications[1]:match('ACP MCP servers:') ~= nil)
+    assert.is_true(notifications[1]:match('%- stdio%-map') ~= nil)
+    assert.is_true(notifications[1]:match("command = \"node\"") ~= nil)
+    assert.is_true(notifications[1]:match("server%.js") ~= nil)
+    assert.is_true(notifications[1]:match("name = \"API_KEY\"") ~= nil)
+    assert.is_true(notifications[1]:match("name = \"TOKEN\"") ~= nil)
+    assert.is_true(notifications[1]:match("name = \"PASSWORD\"") ~= nil)
+    assert.is_true(notifications[1]:match("value = \"<redacted>\"") ~= nil)
+    assert.is_nil(notifications[1]:match('secret'))
+    assert.is_nil(notifications[1]:match('top%-secret'))
+    assert.is_nil(notifications[1]:match('classified'))
+    assert.is_true(notifications[1]:match('%- stdio%-list') ~= nil)
 end)
 
 it('reveals an ACP approval through the command surface', function()
@@ -696,7 +794,34 @@ it('runs an ACP slash command through the command surface', function()
     vim.cmd('ACPRunSlashCommand web agent client protocol')
 
     assert.are.equal('session/prompt', fake_client.async_calls[1].method)
-    assert.are.equal('/web agent client protocol', fake_client.async_calls[1].params.prompt[1].text)
+    assert.is_true(fake_client.async_calls[1].params.prompt[1].text:match('/web agent client protocol%s*$') ~= nil)
+end)
+
+it('rejects ACP slash command invocation without a command name', function()
+    api.open_chat()
+    api.slash_commands()
+    emit_available_commands_update()
+
+    local ok, err = pcall(vim.cmd, 'ACPRunSlashCommand')
+
+    assert.is_false(ok)
+    assert.is_true(err:match('ACP slash command name is required') ~= nil)
+end)
+
+it('completes ACP slash command names and input hints through the command surface', function()
+    api.open_chat()
+    api.slash_commands()
+    emit_available_commands_update()
+
+    local definition = vim.api.nvim_get_commands({
+        builtin = false,
+    })['ACPRunSlashCommand']
+
+    assert.is_function(definition.complete)
+    assert.are.same({ 'web' }, definition.complete('w', 'ACPRunSlashCommand w', 0))
+    assert.are.same({ 'query to search for' }, definition.complete('q', 'ACPRunSlashCommand web q', 0))
+    assert.are.same({}, definition.complete('', 'ACPRunSlashCommand test ', 0))
+    assert.are.same({ 'web' }, definition.complete('w', 'ACPRunSlashCommand foo w', 0))
 end)
 
 it('runs an ACP slash command through the picker command surface', function()
@@ -717,7 +842,7 @@ it('runs an ACP slash command through the picker command surface', function()
     restore_select()
 
     assert.are.equal('session/prompt', fake_client.async_calls[1].method)
-    assert.are.equal('/test', fake_client.async_calls[1].params.prompt[1].text)
+    assert.is_true(fake_client.async_calls[1].params.prompt[1].text:match('/test%s*$') ~= nil)
 end)
 
 it('goes back to ACP slash-command selection when the input prompt is dismissed', function()

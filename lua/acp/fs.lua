@@ -1,3 +1,5 @@
+local buffer = require('acp.buffer')
+
 ---@class acp.FileSystemModule
 local M = {}
 
@@ -10,7 +12,11 @@ local REQUEST_ERROR_CODE = -32000
 ---@param path string
 ---@return boolean
 local function is_absolute_path(path)
-    return type(path) == 'string' and path:sub(1, 1) == '/'
+    if type(path) ~= 'string' then
+        return false
+    end
+
+    return path:sub(1, 1) == '/' or path:match('^%a:[/\\]') ~= nil or path:match('^[/\\][/\\]') ~= nil
 end
 
 ---@param message string
@@ -32,41 +38,73 @@ end
 ---@return integer?
 local find_loaded_buffer
 
+---@param cwd? string
 ---@return string[]
-local function allowed_roots()
-    local cwd = vim.loop.cwd()
+local function allowed_roots(cwd)
+    local roots = {}
+    local seen = {}
 
-    if type(cwd) ~= 'string' or cwd == '' then
-        return {}
+    local function add_root(path)
+        if type(path) ~= 'string' or path == '' then
+            return
+        end
+
+        local normalized = normalize_path(path)
+
+        if not seen[normalized] then
+            seen[normalized] = true
+            table.insert(roots, normalized)
+        end
     end
 
-    return { normalize_path(cwd) }
+    add_root(require('acp.config').get().cwd)
+    add_root(cwd)
+    add_root(vim.fn.getcwd())
+
+    return roots
 end
 
 ---@param path string
 ---@param root string
 ---@return boolean
 local function is_within_root(path, root)
-    return path == root or vim.startswith(path, root .. '/')
+    local normalized_path = path:gsub('\\', '/')
+    local normalized_root = root:gsub('\\', '/')
+
+    if normalized_path ~= '/' then
+        normalized_path = normalized_path:gsub('/+$', '')
+    end
+
+    if normalized_root ~= '/' then
+        normalized_root = normalized_root:gsub('/+$', '')
+    end
+
+    return normalized_path == normalized_root or vim.startswith(normalized_path, normalized_root .. '/')
 end
 
 ---@param path string
+---@param cwd? string
+---@param opts? { allow_loaded_buffer_read: boolean, allow_loaded_buffer_write: boolean }
 ---@return string?, table?
-local function validate_absolute_path(path)
+local function validate_absolute_path(path, cwd, opts)
     if not is_absolute_path(path) then
         return nil, request_error(string.format('ACP file path must be absolute: %s', path))
     end
 
     local normalized_path = normalize_path(path)
 
-    for _, root in ipairs(allowed_roots()) do
+    for _, root in ipairs(allowed_roots(cwd)) do
         if is_within_root(normalized_path, root) then
             return normalized_path, nil
         end
     end
 
-    if find_loaded_buffer(normalized_path) ~= nil then
-        return normalized_path, nil
+    if opts ~= nil then
+        local allow_loaded_buffer = opts.allow_loaded_buffer_read == true or opts.allow_loaded_buffer_write == true
+
+        if allow_loaded_buffer and find_loaded_buffer(normalized_path) ~= nil then
+            return normalized_path, nil
+        end
     end
 
     return nil, request_error(string.format('ACP file path must stay within an allowed workspace root: %s', path))
@@ -112,7 +150,7 @@ end
 local function decode_content(text)
     if text == '' then
         return {
-            lines = { '' },
+            lines = {},
             endofline = false,
         }
     end
@@ -145,37 +183,20 @@ local function read_buffer_snapshot(bufnr)
     }
 end
 
----@param bufnr integer
----@return table?
-local function reload_buffer_from_disk(bufnr)
-    local current = vim.api.nvim_get_current_buf()
-    local ok, reload_error = pcall(function()
-        if current ~= bufnr then
-            vim.api.nvim_set_current_buf(bufnr)
-        end
-
-        vim.cmd('silent noautocmd edit!')
-    end)
-
-    if vim.api.nvim_buf_is_valid(current) and current ~= bufnr then
-        pcall(vim.api.nvim_set_current_buf, current)
-    end
-
-    if not ok then
-        return request_error(tostring(reload_error))
-    end
-
-    return nil
-end
-
 ---@param path string
 ---@return acp.FileSnapshot?, table?
 local function read_disk_snapshot(path)
     local handle, open_error = io.open(path, 'rb')
 
     if handle == nil then
-        if vim.uv.fs_stat(path) == nil then
-            return decode_content('')
+        local stat = vim.uv.fs_stat(path)
+        local missing_file = stat == nil and vim.uv.fs_lstat(path) == nil
+
+        if missing_file then
+            return {
+                lines = {},
+                endofline = false,
+            }, nil
         end
 
         return nil, request_error(open_error or string.format('Failed to read file: %s', path))
@@ -189,6 +210,81 @@ local function read_disk_snapshot(path)
     end
 
     return decode_content(content)
+end
+
+---@param bufnr integer
+---@return table?
+local function reload_buffer_from_disk(bufnr)
+    local target_win = vim.fn.bufwinid(bufnr)
+    local path = vim.api.nvim_buf_get_name(bufnr)
+    local ok, reload_error = pcall(function()
+        buffer.with_mutation(bufnr, function()
+            if target_win ~= -1 then
+                vim.fn.win_execute(target_win, 'silent keepalt keepjumps lockmarks edit!')
+                return
+            end
+
+            local snapshot, read_error = read_disk_snapshot(path)
+
+            if snapshot == nil then
+                error(read_error and read_error.message or string.format('Failed to read file: %s', path))
+            end
+
+            vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, snapshot.lines)
+            vim.bo[bufnr].endofline = snapshot.endofline
+            vim.bo[bufnr].modified = false
+
+            local fileformat = 'unix'
+            if snapshot.endofline then
+                local handle, open_error = io.open(path, 'rb')
+
+                if handle == nil then
+                    error(open_error or string.format('Failed to read file: %s', path))
+                end
+
+                local ok_read, content = pcall(handle.read, handle, '*a')
+                handle:close()
+
+                if not ok_read then
+                    error(string.format('Failed to read file: %s', path))
+                end
+
+                if content:find('\r\n', 1, true) ~= nil then
+                    fileformat = 'dos'
+                end
+            end
+
+            vim.bo[bufnr].fileformat = fileformat
+        end)
+    end)
+
+    if not ok then
+        return request_error(tostring(reload_error))
+    end
+
+    return nil
+end
+
+---@param bufnr integer
+---@return table?
+local function validate_hidden_buffer_sync(bufnr)
+    if vim.fn.bufwinid(bufnr) ~= -1 then
+        return nil
+    end
+
+    local snapshot = read_buffer_snapshot(bufnr)
+    local ok, sync_error = pcall(function()
+        buffer.with_mutation(bufnr, function()
+            vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, snapshot.lines)
+            vim.bo[bufnr].endofline = snapshot.endofline
+        end)
+    end)
+
+    if not ok then
+        return request_error(tostring(sync_error))
+    end
+
+    return nil
 end
 
 ---@param snapshot acp.FileSnapshot
@@ -227,9 +323,12 @@ local function slice_snapshot(snapshot, start_line, limit)
 end
 
 ---@param path string
+---@param cwd? string
 ---@return acp.FileSnapshot?, table?
-local function effective_snapshot(path)
-    local valid_path, path_error = validate_absolute_path(path)
+local function effective_snapshot(path, cwd)
+    local valid_path, path_error = validate_absolute_path(path, cwd, {
+        allow_loaded_buffer_read = true,
+    })
 
     if valid_path == nil then
         return nil, path_error
@@ -251,7 +350,11 @@ local function write_disk(path, content)
     local parent = vim.fn.fnamemodify(path, ':h')
 
     if parent ~= '' then
-        local ok = vim.fn.mkdir(parent, 'p')
+        local mkdir_ok, ok = pcall(vim.fn.mkdir, parent, 'p')
+
+        if not mkdir_ok then
+            return request_error(ok or string.format('Failed to create parent directory: %s', parent))
+        end
 
         if ok == 0 and vim.fn.isdirectory(parent) == 0 then
             return request_error(string.format('Failed to create parent directory: %s', parent))
@@ -278,7 +381,7 @@ end
 ---@param params acp.ReadTextFileRequest
 ---@return acp.ReadTextFileResponse?, table?
 function M.read_text_file(params)
-    local snapshot, snapshot_error = effective_snapshot(params.path)
+    local snapshot, snapshot_error = effective_snapshot(params.path, params.cwd)
 
     if snapshot == nil then
         return nil, snapshot_error
@@ -296,31 +399,50 @@ end
 ---@param params acp.WriteTextFileRequest
 ---@return acp.WriteTextFileResponse?, table?
 function M.write_text_file(params)
-    local path, path_error = validate_absolute_path(params.path)
+    local path, path_error = validate_absolute_path(params.path, params.cwd, {
+        allow_loaded_buffer_write = true,
+    })
 
     if path == nil then
         return nil, path_error
     end
 
+    if type(params.content) ~= 'string' then
+        return nil, request_error('content must be a string')
+    end
+
     local requested_snapshot = decode_content(params.content)
+    local requested_content = encode_snapshot(requested_snapshot.lines, requested_snapshot.endofline)
     local bufnr = find_loaded_buffer(path)
+    local current_snapshot = bufnr ~= nil and read_buffer_snapshot(bufnr) or nil
 
-    if bufnr ~= nil then
-        local modifiable = vim.bo[bufnr].modifiable
+    if current_snapshot ~= nil then
+        if vim.bo[bufnr].modified then
+            return nil, request_error(string.format('Cannot synchronize modified buffer for file: %s', path))
+        end
 
-        if not modifiable then
-            local current_snapshot = read_buffer_snapshot(bufnr)
+        if vim.bo[bufnr].modifiable == false then
+            local buftype = vim.api.nvim_get_option_value('buftype', {
+                buf = bufnr,
+            })
 
-            if encode_snapshot(current_snapshot.lines, current_snapshot.endofline)
-                == encode_snapshot(requested_snapshot.lines, requested_snapshot.endofline) then
-                return {}, nil
+            if buftype ~= '' or vim.fn.bufwinid(bufnr) ~= -1 then
+                return nil, request_error(string.format('Cannot synchronize non-modifiable buffer for file: %s', path))
             end
+        end
 
-            return nil, request_error(string.format('Cannot synchronize non-modifiable buffer for file: %s', path))
+        local sync_error = validate_hidden_buffer_sync(bufnr)
+
+        if sync_error ~= nil then
+            return nil, sync_error
+        end
+
+        if encode_snapshot(current_snapshot.lines, current_snapshot.endofline) == requested_content then
+            return {}, nil
         end
     end
 
-    local write_error = write_disk(path, params.content)
+    local write_error = write_disk(path, requested_content)
 
     if write_error ~= nil then
         return nil, write_error
@@ -330,7 +452,9 @@ function M.write_text_file(params)
         local sync_error = reload_buffer_from_disk(bufnr)
 
         if sync_error ~= nil then
-            return nil, sync_error
+            return {
+                sync_error = sync_error.message,
+            }, nil
         end
     end
 

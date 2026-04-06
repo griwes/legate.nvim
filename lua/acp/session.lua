@@ -52,6 +52,7 @@ local function make_session()
         created_at = timestamp,
         updated_at = timestamp,
         transport_remote_id = nil,
+        cwd = nil,
     }
 end
 
@@ -142,7 +143,7 @@ local function persisted_session(current_session)
     snapshot.transport_remote_id = nil
 
     snapshot.pending_prompt = nil
-    snapshot.pending_approvals = type(snapshot.pending_approvals) == 'table' and snapshot.pending_approvals or {}
+    snapshot.pending_approvals = {}
 
     if snapshot.status == 'waiting' then
         snapshot.status = 'cancelled'
@@ -156,6 +157,128 @@ local function persisted_session(current_session)
     end
 
     return snapshot
+end
+
+---@param entry table
+---@return acp.ApprovalEntry?
+local function normalize_approval_entry(entry)
+    if type(entry) ~= 'table' then
+        return nil
+    end
+
+    local source = entry.source == 'select' and 'select' or 'default'
+    local outcome = entry.outcome == 'selected' and 'selected' or 'cancelled'
+    local title = type(entry.title) == 'string' and entry.title or 'Approval'
+    local ordinal = math.max(tonumber(entry.ordinal) or 0, 0)
+
+    return {
+        ordinal = ordinal,
+        stream_key = type(entry.stream_key) == 'string' and entry.stream_key or '',
+        tool_call_id = type(entry.tool_call_id) == 'string' and entry.tool_call_id or nil,
+        title = title,
+        outcome = outcome,
+        source = source,
+        selected_kind = entry.selected_kind,
+        selected_option_name = type(entry.selected_option_name) == 'string' and entry.selected_option_name or nil,
+        selected_option_id = type(entry.selected_option_id) == 'string' and entry.selected_option_id or nil,
+        options = type(entry.options) == 'table' and vim.deepcopy(entry.options) or {},
+    }
+end
+
+---@param entries any
+---@return acp.ApprovalEntry[]
+local function normalize_approval_entries(entries)
+    if type(entries) ~= 'table' then
+        return {}
+    end
+
+    local normalized = {}
+
+    for _, entry in ipairs(entries) do
+        local approval = normalize_approval_entry(entry)
+
+        if approval ~= nil then
+            table.insert(normalized, approval)
+        end
+    end
+
+    table.sort(normalized, function(left, right)
+        if left.ordinal == right.ordinal then
+            return left.title < right.title
+        end
+
+        return left.ordinal < right.ordinal
+    end)
+
+    for index, approval in ipairs(normalized) do
+        approval.ordinal = index
+        approval.stream_key = approval_stream_key(index)
+    end
+
+    return normalized
+end
+
+---@param pending any
+---@return acp.PendingApproval?
+local function normalize_pending_approval(pending)
+    if type(pending) ~= 'table' then
+        return nil
+    end
+
+    local request_id = type(pending.request_id) == 'string' and pending.request_id or nil
+
+    if request_id == nil then
+        return nil
+    end
+
+    return {
+        request_id = request_id,
+        ordinal = math.max(tonumber(pending.ordinal) or 0, 0),
+        tool_call_id = type(pending.tool_call_id) == 'string' and pending.tool_call_id or nil,
+        title = type(pending.title) == 'string' and pending.title or 'Approval',
+        options = type(pending.options) == 'table' and vim.deepcopy(pending.options) or {},
+        generation = math.max(tonumber(pending.generation) or 0, 0),
+        created_at = tonumber(pending.created_at) or now(),
+    }
+end
+
+---@param pending_approvals any
+---@param approval_entries acp.ApprovalEntry[]
+---@return acp.PendingApproval[]
+local function normalize_pending_approvals(pending_approvals, approval_entries)
+    if type(pending_approvals) ~= 'table' then
+        return {}
+    end
+
+    local normalized = {}
+    local next_ordinal = #approval_entries
+
+    for _, pending in ipairs(pending_approvals) do
+        local item = normalize_pending_approval(pending)
+
+        if item ~= nil then
+            table.insert(normalized, item)
+        end
+    end
+
+    table.sort(normalized, function(left, right)
+        if left.ordinal == right.ordinal then
+            if left.created_at == right.created_at then
+                return left.request_id < right.request_id
+            end
+
+            return left.created_at < right.created_at
+        end
+
+        return left.ordinal < right.ordinal
+    end)
+
+    for _, item in ipairs(normalized) do
+        next_ordinal = next_ordinal + 1
+        item.ordinal = next_ordinal
+    end
+
+    return normalized
 end
 
 ---@param item table
@@ -180,7 +303,6 @@ local function restore_session(item)
     end
 
     restored.pending_prompt = nil
-    restored.pending_approvals = type(restored.pending_approvals) == 'table' and restored.pending_approvals or {}
     restored.remote_id = type(restored.remote_id) == 'string' and restored.remote_id or nil
     restored.remote_sync_state = normalize_remote_sync_state(restored.remote_sync_state, restored.remote_id)
     restored.remote_sync_error = type(restored.remote_sync_error) == 'string'
@@ -190,10 +312,12 @@ local function restore_session(item)
     restored.plan_entries = type(restored.plan_entries) == 'table' and restored.plan_entries or {}
     restored.available_commands = normalize_available_commands(restored.available_commands)
     restored.tool_calls = type(restored.tool_calls) == 'table' and restored.tool_calls or {}
-    restored.approval_entries = type(restored.approval_entries) == 'table' and restored.approval_entries or {}
+    restored.approval_entries = normalize_approval_entries(restored.approval_entries)
+    restored.pending_approvals = normalize_pending_approvals(restored.pending_approvals, restored.approval_entries)
     restored.config_options = type(restored.config_options) == 'table' and restored.config_options or {}
     restored.turn_id = math.max(tonumber(restored.turn_id) or 0, 0)
     restored.transport_remote_id = nil
+    restored.cwd = type(restored.cwd) == 'string' and restored.cwd or nil
     restored.created_at = tonumber(restored.created_at) or now()
     restored.updated_at = tonumber(restored.updated_at) or restored.created_at
 
@@ -318,7 +442,7 @@ function M.close(session_id)
     local next_session = nil
 
     if index ~= nil then
-        next_session = ordered[index - 1] or ordered[index + 1]
+        next_session = ordered[index + 1] or ordered[index - 1]
     end
 
     current_id = next_session and next_session.id or nil
@@ -495,7 +619,7 @@ end
 ---@param stop_reason acp.StopReason
 function M.finish_prompt(current_session, stop_reason)
     current_session.pending_prompt = nil
-    current_session.pending_approval = nil
+    current_session.pending_approvals = {}
     current_session.stop_reason = stop_reason
     current_session.status = stop_reason == 'cancelled' and 'cancelled' or 'idle'
     current_session.updated_at = now()
@@ -541,6 +665,13 @@ end
 ---@return string?
 function M.transport_remote_id(current_session)
     return current_session.transport_remote_id
+end
+
+---@param current_session acp.Session
+---@param cwd string?
+function M.set_cwd(current_session, cwd)
+    current_session.cwd = cwd
+    current_session.updated_at = now()
 end
 
 ---Store the current remote sync state on the local session.
@@ -896,6 +1027,21 @@ function M.clear_pending_approval_by_request_id(current_session, request_id)
 end
 
 ---@param current_session acp.Session
+---@param request_id string
+---@return acp.PendingApproval?
+function M.promote_pending_approval_by_request_id(current_session, request_id)
+    local pending = M.clear_pending_approval_by_request_id(current_session, request_id)
+
+    if pending == nil then
+        return nil
+    end
+
+    table.insert(current_session.pending_approvals, 1, pending)
+    current_session.updated_at = now()
+    return pending
+end
+
+---@param current_session acp.Session
 ---@param tool_call_id string?
 ---@return acp.PendingApproval?
 function M.clear_pending_approval(current_session, tool_call_id)
@@ -966,6 +1112,7 @@ function M.snapshot()
         current_id = current_id,
         next_ordinal = next_ordinal,
         next_message_id = next_message_id,
+        next_pending_approval_ordinal = next_pending_approval_ordinal,
         sessions = persisted,
     }
 end
@@ -1017,9 +1164,14 @@ function M.restore(payload)
 
     next_ordinal = math.max(tonumber(payload.next_ordinal) or 1, max_ordinal + 1)
     next_message_id = math.max(tonumber(payload.next_message_id) or 1, max_message_id + 1)
-    next_pending_approval_ordinal = 1
+    next_pending_approval_ordinal = tonumber(payload.next_pending_approval_ordinal) or 1
 
     for _, current_session in ipairs(ordered) do
+        for _, approval in ipairs(current_session.approval_entries or {}) do
+            next_pending_approval_ordinal =
+                math.max(next_pending_approval_ordinal, (tonumber(approval.ordinal) or 0) + 1)
+        end
+
         for _, pending in ipairs(current_session.pending_approvals or {}) do
             next_pending_approval_ordinal =
                 math.max(next_pending_approval_ordinal, (tonumber(pending.ordinal) or 0) + 1)

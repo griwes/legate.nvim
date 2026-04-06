@@ -15,6 +15,26 @@
 local M = {}
 M.__index = M
 
+---@param self acp.RpcClientImpl
+---@return table?
+local function request_transport_error(self)
+    if self.system == nil then
+        return {
+            code = -32001,
+            message = 'ACP RPC client is not started',
+        }
+    end
+
+    if self.closed or self.system:is_closing() then
+        return {
+            code = -32001,
+            message = 'ACP RPC transport is closed',
+        }
+    end
+
+    return nil
+end
+
 ---@param opts { command: string[], cwd?: string, env?: table<string, string>, timeout_ms?: integer, on_notification?: fun(method: string, params: table), on_request?: fun(method: string, params: table, respond: fun(result?: any, error?: table)) }
 ---@return acp.RpcClientImpl
 function M.new(opts)
@@ -198,6 +218,8 @@ function M:start()
         return false, system
     end
 
+    self.closed = false
+
     self.system = system
     return true
 end
@@ -208,6 +230,13 @@ end
 ---@param callback fun(result?: any, error?: table)
 ---@return integer
 function M:request(method, params, callback)
+    local transport_error = request_transport_error(self)
+
+    if transport_error ~= nil then
+        callback(nil, transport_error)
+        return -1
+    end
+
     local id = self.next_id
     self.next_id = self.next_id + 1
     self.pending[id] = callback
@@ -237,6 +266,10 @@ function M:request_sync(method, params, timeout_ms)
         rpc_error = error
         done = true
     end)
+
+    if request_id == -1 then
+        return result, rpc_error
+    end
 
     local timeout = timeout_ms or self.timeout_ms
     local completed = vim.wait(timeout, function()

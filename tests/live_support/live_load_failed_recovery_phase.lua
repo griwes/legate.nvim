@@ -125,7 +125,10 @@ local ok, err = xpcall(function()
         )
         wait_for_turn_completion(current_session, prompt_timeout_ms)
         assert_transcript_contains(current_session, phase_one_token)
-        api.save_sessions()
+
+        local ok, payload_or_err = api.save_sessions()
+
+        assert(ok, payload_or_err)
 
         write_json(result_file, {
             phase = phase,
