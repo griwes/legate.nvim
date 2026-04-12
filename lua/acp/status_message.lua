@@ -389,6 +389,59 @@ local function summarize_tool_content(content, opts)
     return nil
 end
 
+local TERMINAL_PREVIEW_LIMIT = 120
+local TERMINAL_HOVER_OUTPUT_LIMIT = 12
+
+---@param tool_call acp.ToolCallState
+---@return acp.MetaTerminalStream?
+local function preferred_terminal_stream(tool_call)
+    if type(tool_call.terminal_streams) ~= 'table' then
+        return nil
+    end
+
+    local ids = vim.tbl_keys(tool_call.terminal_streams)
+    table.sort(ids)
+
+    local fallback = nil
+
+    for _, terminal_id in ipairs(ids) do
+        local stream = tool_call.terminal_streams[terminal_id]
+
+        if stream ~= nil then
+            fallback = fallback or stream
+
+            if type(stream.output) == 'string' and stream.output ~= '' then
+                return stream
+            end
+        end
+    end
+
+    return fallback
+end
+
+---@param stream acp.MetaTerminalStream?
+---@param limit? integer
+---@return string?
+local function terminal_preview(stream, limit)
+    if stream == nil or type(stream.output) ~= 'string' then
+        return nil
+    end
+
+    local preview = vim.trim(stream.output:gsub('%s+', ' '))
+
+    if preview == '' then
+        return nil
+    end
+
+    limit = limit or TERMINAL_PREVIEW_LIMIT
+
+    if #preview > limit then
+        return preview:sub(1, limit - 1) .. '…'
+    end
+
+    return preview
+end
+
 ---@param text string?
 ---@return boolean
 local function opaque_text_payload(text)
@@ -521,14 +574,22 @@ local function tool_hint(tool_call)
         return markdown_location(tool_call.locations[1])
     end
 
+    local preview = terminal_preview(preferred_terminal_stream(tool_call), 80)
+
+    if preview ~= nil then
+        return preview
+    end
+
     for _, content in ipairs(tool_call.content) do
-        if not (
-            is_mcp_tool
-            and content.type == 'content'
-            and content.content ~= nil
-            and content.content.type == 'text'
-            and opaque_text_payload(content.content.text)
-        ) then
+        if
+            not (
+                is_mcp_tool
+                and content.type == 'content'
+                and content.content ~= nil
+                and content.content.type == 'text'
+                and opaque_text_payload(content.content.text)
+            )
+        then
             local summary = summarize_tool_content(content, {
                 limit = 80,
                 include_text = true,
@@ -886,6 +947,41 @@ local function tool_call_hover_lines(tool_call)
             else
                 table.insert(lines, detail_bullet('Content', string.format('`%s`', content.type)))
             end
+        end
+    end
+
+    local stream = preferred_terminal_stream(tool_call)
+
+    if stream ~= nil then
+        table.insert(lines, '')
+        table.insert(lines, '#### Terminal Stream')
+        table.insert(lines, detail_bullet('Terminal', string.format('`%s`', stream.terminal_id)))
+
+        if type(stream.cwd) == 'string' and stream.cwd ~= '' then
+            table.insert(lines, detail_bullet('Cwd', string.format('`%s`', stream.cwd)))
+        end
+
+        if stream.exit_code ~= nil then
+            table.insert(lines, detail_bullet('Exit Code', string.format('`%s`', stream.exit_code)))
+        end
+
+        if stream.signal ~= nil and stream.signal ~= '' then
+            table.insert(lines, detail_bullet('Signal', string.format('`%s`', stream.signal)))
+        end
+
+        local output_lines = type(stream.output) == 'string' and vim.split(stream.output, '\n', { plain = true }) or {}
+
+        if #output_lines > 0 and not (#output_lines == 1 and output_lines[1] == '') then
+            table.insert(lines, '')
+            table.insert(lines, '```text')
+
+            local start_index = math.max(1, #output_lines - TERMINAL_HOVER_OUTPUT_LIMIT + 1)
+
+            for index = start_index, #output_lines do
+                table.insert(lines, output_lines[index])
+            end
+
+            table.insert(lines, '```')
         end
     end
 

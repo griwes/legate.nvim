@@ -345,6 +345,8 @@ function M.run(description, body_path)
             package.loaded['acp.handlers.terminal'] = nil
             package.loaded['acp.model'] = nil
             package.loaded['acp.methods'] = nil
+            package.loaded['acp.mcp_guidance'] = nil
+            package.loaded['acp.mcp_runtime'] = nil
             package.loaded['acp.persistence'] = nil
             package.loaded['acp.rpc'] = nil
             package.loaded['acp.render'] = nil

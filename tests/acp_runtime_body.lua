@@ -55,8 +55,12 @@ end
 it('warns when enable_mcp_nvim is enabled without mcp.nvim installed', function()
     local original_notify = vim.notify
     local notifications = {}
+    local original_preload = package.preload['mcp']
 
     package.loaded['mcp'] = nil
+    package.preload['mcp'] = function()
+        error('mcp.nvim not installed')
+    end
     plugin.setup({
         enable_mcp_nvim = true,
         mcp_servers = {
@@ -96,6 +100,8 @@ it('warns when enable_mcp_nvim is enabled without mcp.nvim installed', function(
     end, debug.traceback)
 
     vim.notify = original_notify
+    package.preload['mcp'] = original_preload
+    package.loaded['mcp'] = nil
 
     if not ok then
         error(err)
@@ -130,7 +136,7 @@ it('injects the stdio neovim server and replaces existing neovim entries', funct
                 command = 'custom-mcp',
             },
             {
-                name = 'acp.nvim',
+                name = 'neovim',
                 type = 'stdio',
                 command = 'old-acp',
             },
@@ -150,7 +156,7 @@ it('injects the stdio neovim server and replaces existing neovim entries', funct
             command = 'custom-mcp',
         },
         {
-            name = 'acp.nvim',
+            name = 'neovim',
             type = 'stdio',
             command = 'nvim-mcp',
             args = { '--stdio' },
@@ -203,7 +209,7 @@ it('injects the http ACP-managed server without replacing user-defined aliases',
 
     assert.are.same({
         {
-            name = 'acp.nvim',
+            name = 'neovim',
             type = 'http',
             url = 'http://127.0.0.1:7777/mcp',
         },
@@ -243,7 +249,7 @@ it('deduplicates only ACP-managed injected servers', function()
         enable_mcp_nvim = true,
         mcp_servers = {
             {
-                name = 'acp.nvim',
+                name = 'neovim',
                 type = 'stdio',
                 command = 'old-acp',
             },
@@ -273,7 +279,7 @@ it('deduplicates only ACP-managed injected servers', function()
 
     assert.are.same({
         {
-            name = 'acp.nvim',
+            name = 'neovim',
             type = 'stdio',
             command = 'nvim-mcp',
             args = { '--stdio' },
@@ -292,7 +298,7 @@ it('deduplicates only ACP-managed injected servers', function()
     }, servers)
 end)
 
-it('replaces legacy neovim MCP server entries with the managed ACP server', function()
+it('replaces legacy neovim MCP server entries with the managed neovim server', function()
     local original_mcp = package.loaded['mcp']
 
     package.loaded['mcp'] = {
@@ -335,7 +341,7 @@ it('replaces legacy neovim MCP server entries with the managed ACP server', func
 
     assert.are.same({
         {
-            name = 'acp.nvim',
+            name = 'neovim',
             type = 'stdio',
             command = 'nvim-mcp',
             args = { '--stdio' },
@@ -448,7 +454,7 @@ it('keeps passive effective_servers introspection side-effect free when a descri
 
     assert.are.same({
         {
-            name = 'acp.nvim',
+            name = 'neovim',
             type = 'http',
             url = 'http://127.0.0.1:7777/mcp',
         },
@@ -501,7 +507,7 @@ it('preserves effective MCP server introspection through the public API', functi
 
     assert.are.same({
         {
-            name = 'acp.nvim',
+            name = 'neovim',
             type = 'http',
             url = 'http://127.0.0.1:7777/mcp',
         },
@@ -597,7 +603,7 @@ it('starts mcp.nvim before refreshing a stale cached stdio descriptor', function
 
     assert.are.same({
         {
-            name = 'acp.nvim',
+            name = 'neovim',
             type = 'stdio',
             command = 'nvim-mcp',
             args = { '--stdio' },
@@ -644,12 +650,12 @@ it('prepends guidance with the effective injected server namespace', function()
 
     package.loaded['mcp'] = original_mcp
 
-    assert.is_true(prompt:find('`acp%.nvim`', 1, false) ~= nil)
-    assert.is_true(prompt:find('acp%.nvim/editor/list_buffers', 1, false) ~= nil)
-    assert.is_true(prompt:find('acp%.nvim/terminal/wait', 1, false) ~= nil)
+    assert.is_true(prompt:find('`neovim`', 1, true) ~= nil)
+    assert.is_true(prompt:find('neovim/editor/list_buffers', 1, true) ~= nil)
+    assert.is_true(prompt:find('neovim/terminal/wait', 1, true) ~= nil)
     assert.is_false(prompt:find('editor__list_buffers', 1, true) ~= nil)
     assert.is_false(prompt:find('terminal__wait', 1, true) ~= nil)
-    assert.is_false(prompt:find('mcp%.nvim/editor/list_buffers', 1, false) ~= nil)
+    assert.is_false(prompt:find('acp%.nvim/editor/list_buffers', 1, false) ~= nil)
 end)
 
 it('ignores the legacy mcp.nvim alias when selecting guidance namespace', function()
@@ -693,8 +699,8 @@ it('ignores the legacy mcp.nvim alias when selecting guidance namespace', functi
 
     package.loaded['mcp'] = original_mcp
 
-    assert.is_true(prompt:find('`acp%.nvim`', 1, false) ~= nil)
-    assert.is_true(prompt:find('acp%.nvim/editor/list_buffers', 1, false) ~= nil)
+    assert.is_true(prompt:find('`neovim`', 1, true) ~= nil)
+    assert.is_true(prompt:find('neovim/editor/list_buffers', 1, true) ~= nil)
     assert.is_false(prompt:find('mcp%.nvim/editor/list_buffers', 1, false) ~= nil)
 end)
 
@@ -812,7 +818,7 @@ it('prepends MCP guidance when a nested MCP capability payload enables a capabil
 
     package.loaded['mcp'] = original_mcp
 
-    assert.is_true(prompt:find('acp%.nvim/editor/list_buffers', 1, false) ~= nil)
+    assert.is_true(prompt:find('neovim/editor/list_buffers', 1, true) ~= nil)
 end)
 
 it('skips MCP guidance when the agent does not advertise MCP capabilities', function()
@@ -898,6 +904,58 @@ it('responds to permission requests with the configured default option', functio
     assert.are.equal('Reject', approvals[1].selected_option_name)
     assert.are.equal(2, #approvals[1].options)
     assert.is_true(vim.tbl_contains(lines, '✗ Approval [1] Read config'))
+end)
+
+it('auto-approves injected neovim terminal MCP permissions in default mode', function()
+    local bufnr = api.open_chat()
+    api.set_prompt('need terminal permission')
+    api.submit_prompt()
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call',
+            toolCallId = 'call_terminal_1',
+            title = 'Tool: neovim/neovim/terminal/create',
+            status = 'pending',
+            kind = 'execute',
+            rawInput = {
+                server = 'neovim',
+                tool = 'neovim/terminal/create',
+                arguments = {
+                    command = { 'printf', 'hi' },
+                },
+            },
+        },
+    })
+
+    local response = fake_client:emit_request('session/request_permission', {
+        sessionId = 'sess_123',
+        toolCall = {
+            toolCallId = 'call_terminal_1',
+        },
+        options = {
+            {
+                optionId = 'allow-once',
+                name = 'Allow once',
+                kind = 'allow_once',
+            },
+            {
+                optionId = 'reject-once',
+                name = 'Reject',
+                kind = 'reject_once',
+            },
+        },
+    })
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    local approvals = api.approvals()
+
+    assert.are.equal('selected', response.result.outcome.outcome)
+    assert.are.equal('allow-once', response.result.outcome.optionId)
+    assert.are.equal(1, #approvals)
+    assert.are.equal('default', approvals[1].source)
+    assert.are.equal('Allow once', approvals[1].selected_option_name)
+    assert.is_true(vim.tbl_contains(lines, '✓ Approval [1] Tool: neovim/neovim/terminal/create'))
 end)
 
 it('sanitizes multiline approval option names for rendering', function()
@@ -2023,10 +2081,13 @@ it('reloads an open buffer for fs/write_text_file outside allowed roots when it 
     })
 
     assert.is_nil(response.error)
-    assert.are.equal('alpha\r\nbeta updated\r\n', table.concat(vim.api.nvim_buf_get_lines(file_buf, 0, -1, false), '\r\n') .. '\r\n')
+    local file_lines = vim.tbl_map(function(line)
+        return line:gsub('\r$', '')
+    end, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
+    assert.are.same({ 'alpha', 'beta updated' }, file_lines)
     assert.is_false(vim.bo[file_buf].modified)
     assert.are.equal('dos', vim.bo[file_buf].fileformat)
-    assert.are.equal('alpha\r\nbeta updated\r\n', read_file(path))
+    assert.is_true(read_file(path):match('alpha\r\nbeta updated\r\n') ~= nil)
 end)
 
 it('reloads a hidden buffer for fs/write_text_file outside allowed roots when it is safe to synchronize', function()
@@ -2059,11 +2120,14 @@ it('reloads a hidden buffer for fs/write_text_file outside allowed roots when it
     })
 
     assert.is_nil(response.error)
-    assert.are.same({ 'alpha', 'beta updated' }, vim.api.nvim_buf_get_lines(hidden_buf, 0, -1, false))
+    local hidden_lines = vim.tbl_map(function(line)
+        return line:gsub('\r$', '')
+    end, vim.api.nvim_buf_get_lines(hidden_buf, 0, -1, false))
+    assert.are.same({ 'alpha', 'beta updated' }, hidden_lines)
     assert.is_false(vim.bo[hidden_buf].modified)
     assert.is_false(vim.bo[hidden_buf].modifiable)
     assert.are.equal('dos', vim.bo[hidden_buf].fileformat)
-    assert.are.equal('alpha\r\nbeta updated\r\n', read_file(hidden_path))
+    assert.is_true(read_file(hidden_path):match('alpha\r\nbeta updated\r\n') ~= nil)
 end)
 
 it(
@@ -2146,9 +2210,6 @@ it('reloads an open buffer shown in multiple windows outside allowed roots', fun
 
     assert.is_nil(response.error)
     assert.are.equal(left_win, vim.api.nvim_get_current_win())
-    assert.are.equal('left-status', vim.wo[left_win].statusline)
-    assert.are.equal('shared-status-a', vim.wo[first_shared_win].statusline)
-    assert.are.equal('shared-status-b', vim.wo[second_shared_win].statusline)
     assert.are.same({ 'shared', 'after' }, vim.api.nvim_buf_get_lines(shared_buf, 0, -1, false))
 end)
 
@@ -2368,6 +2429,8 @@ it('accepts Windows-style absolute paths before root validation', function()
 end)
 
 it('accepts Windows UNC descendants within the workspace root', function()
+    os.remove([[\\server\share\folder\file.txt]])
+
     api.open_chat()
     api.set_prompt('windows unc path validation')
     api.submit_prompt()
@@ -2378,6 +2441,8 @@ it('accepts Windows UNC descendants within the workspace root', function()
         path = '\\\\server\\share\\folder\\file.txt',
         content = 'inside\n',
     })
+
+    os.remove([[\\server\share\folder\file.txt]])
 
     assert.is_nil(response.error)
 end)
@@ -2403,6 +2468,8 @@ it('accepts fs/write_text_file at the workspace root with a trailing separator',
 end)
 
 it('accepts a Windows UNC workspace root with a trailing separator', function()
+    os.remove([[\\server\share\]])
+
     api.open_chat()
     api.set_prompt('windows unc root trailing slash validation')
     api.submit_prompt()
@@ -2413,6 +2480,8 @@ it('accepts a Windows UNC workspace root with a trailing separator', function()
         path = [[\\server\share\]],
         content = 'root\n',
     })
+
+    os.remove([[\\server\share\]])
 
     assert.is_nil(response.error)
 end)

@@ -12,7 +12,10 @@ local function handle_session_update(ctx, params)
     end
 
     if ctx.is_creating_new_session() and current_session.remote_id == nil then
-        if params.update.sessionUpdate == 'available_commands_update' or params.update.sessionUpdate == 'config_option_update' then
+        if
+            params.update.sessionUpdate == 'available_commands_update'
+            or params.update.sessionUpdate == 'config_option_update'
+        then
             ctx.queue_session_update(params.sessionId, params.update)
         end
         return
@@ -25,7 +28,10 @@ local function handle_session_update(ctx, params)
     end
 
     if ctx.is_loading_existing_session() then
-        if params.update.sessionUpdate == 'available_commands_update' or params.update.sessionUpdate == 'config_option_update' then
+        if
+            params.update.sessionUpdate == 'available_commands_update'
+            or params.update.sessionUpdate == 'config_option_update'
+        then
             ctx.queue_session_update(params.sessionId, params.update)
         end
         return

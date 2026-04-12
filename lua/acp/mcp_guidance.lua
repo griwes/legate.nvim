@@ -13,6 +13,11 @@ local function guidance_for(server_name)
             server_name
         ),
         string.format(
+            '- When the tool call surface separates server selection from tool selection, choose MCP server `%s` and then tool path `editor/...` or `terminal/...` without repeating the `%s/` prefix inside the tool-path field.',
+            server_name,
+            server_name
+        ),
+        string.format(
             '- The Neovim MCP server groups tools internally as `editor/...` and `terminal/...`; the advertised MCP tool names preserve those nested slash-delimited paths under the `%s/...` namespace, such as `%s/editor/list_buffers` and `%s/terminal/create`.',
             server_name,
             server_name,
@@ -33,20 +38,25 @@ local function guidance_for(server_name)
             server_name
         ),
         string.format(
-            '- Prefer ACP-native terminal methods when they are actually available and selected by the runtime; otherwise use the exact `tools/list` terminal names `%s/terminal/create`, `%s/terminal/output`, `%s/terminal/wait`, and `%s/terminal/release`.',
+            '- Terminal execution policy: prefer ACP-native terminal methods when they are actually available and selected by the runtime; otherwise use the exact `tools/list` terminal names `%s/terminal/create`, `%s/terminal/output`, `%s/terminal/wait`, and `%s/terminal/release`.',
             server_name,
             server_name,
             server_name,
             server_name
         ),
+        string.format(
+            '- Do not execute shell commands through a generic execute tool when ACP terminal methods or `%s/terminal/*` are available for the task.',
+            server_name
+        ),
+        '- If you still choose a non-terminal execution path, explicitly explain why the required terminal channels were unavailable before proceeding.',
     }, '\n')
 end
 
 local function effective_server_name()
-    local injected_server_name = runtime.injected_server_name and runtime.injected_server_name() or 'acp.nvim'
+    local injected_server_name = runtime.injected_server_name and runtime.injected_server_name() or 'neovim'
 
-    for _, server in ipairs(runtime.effective_servers({ passive = true })) do
-        if server.name == injected_server_name or server.name == 'neovim' then
+    for _, server in ipairs(runtime.effective_servers(nil, { passive = true })) do
+        if server.name == injected_server_name then
             return server.name
         end
     end
@@ -89,12 +99,22 @@ local function supports_mcp_guidance(agent_capabilities)
     return false
 end
 
-function M.prepend(prompt, agent_capabilities)
-    if not config.get().mcp_nvim_guidance or not supports_mcp_guidance(agent_capabilities) then
+function M.prepend(prompt, agent_capabilities, current_session)
+    local adapter = config.adapter_for_session(current_session)
+
+    if not adapter.mcp_nvim_guidance or not supports_mcp_guidance(agent_capabilities) then
         return prompt
     end
 
-    local server_name = effective_server_name()
+    local injected_server_name = runtime.injected_server_name and runtime.injected_server_name() or 'neovim'
+    local server_name = nil
+
+    for _, server in ipairs(runtime.effective_servers(current_session, { passive = true })) do
+        if server.name == injected_server_name then
+            server_name = server.name
+            break
+        end
+    end
 
     if server_name == nil then
         return prompt

@@ -31,6 +31,10 @@ end
 ---@param path string
 ---@return string
 local function normalize_path(path)
+    if type(path) == 'string' and (path:match('^%a:[/\\]') ~= nil or path:match('^[/\\][/\\]') ~= nil) then
+        return vim.fs.normalize(path)
+    end
+
     return vim.fs.normalize(vim.fn.fnamemodify(path, ':p'))
 end
 
@@ -232,7 +236,6 @@ local function reload_buffer_from_disk(bufnr)
 
             vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, snapshot.lines)
             vim.bo[bufnr].endofline = snapshot.endofline
-            vim.bo[bufnr].modified = false
 
             local fileformat = 'unix'
             if snapshot.endofline then
@@ -255,6 +258,7 @@ local function reload_buffer_from_disk(bufnr)
             end
 
             vim.bo[bufnr].fileformat = fileformat
+            vim.bo[bufnr].modified = false
         end)
     end)
 

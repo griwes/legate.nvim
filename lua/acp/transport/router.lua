@@ -64,7 +64,19 @@ function M:dispatch_request(generation, method, params, respond)
         return
     end
 
-    if type(method) == 'string' and vim.startswith(method, '_') then
+    if type(method) ~= 'string' then
+        local current_session = self.ctx.active_request_session(params)
+
+        if current_session == nil then
+            respond(nil, self.ctx.inactive_request_error())
+            return
+        end
+
+        respond(nil, unsupported_request_error(method))
+        return
+    end
+
+    if vim.startswith(method, '_') then
         local extension_handler = handlers.extension_request_handler(method)
 
         if extension_handler ~= nil then

@@ -72,6 +72,7 @@
 ---@class acp.Session
 ---@field id string
 ---@field ordinal integer
+---@field adapter_name string
 ---@field status acp.SessionStatus
 ---@field messages acp.Message[]
 ---@field draft_prompt string
@@ -124,6 +125,22 @@
 ---@class acp.ClientCapabilities
 ---@field fs? { readTextFile?: boolean, writeTextFile?: boolean }
 ---@field terminal? boolean
+
+---@class acp.AdapterConfig
+---@field command string[]
+---@field env table<string, string>
+---@field protocol_version integer
+---@field client_info acp.ClientInfo
+---@field client_capabilities acp.ClientCapabilities
+---@field cwd string?
+---@field mcp_servers table[]
+---@field enable_mcp_nvim boolean
+---@field mcp_nvim_guidance boolean
+---@field auth_method string?
+---@field request_timeout_ms integer
+---@field config_option_overrides table<string, string>
+---@field title? string
+---@field description? string
 
 ---@class acp.ReadTextFileRequest
 ---@field path string
@@ -225,6 +242,13 @@
 ---@field type 'terminal'
 ---@field terminalId string
 
+---@class acp.MetaTerminalStream
+---@field terminal_id string
+---@field cwd? string
+---@field output string
+---@field exit_code? integer
+---@field signal? string?
+
 ---@alias acp.ToolCallContent
 ---| acp.ToolCallContentContent
 ---| acp.ToolCallContentDiff
@@ -240,6 +264,7 @@
 ---@field content acp.ToolCallContent[]
 ---@field raw_input? table
 ---@field raw_output? table
+---@field terminal_streams? table<string, acp.MetaTerminalStream>
 
 ---@class acp.ApprovalEntry
 ---@field ordinal integer
@@ -361,8 +386,6 @@
 ---@field enable_hover_lsp boolean
 ---@field prompt_header string
 ---@field transcript_header string
----@field agent_command string[]
----@field agent_env table<string, string>
 ---@field protocol_version integer
 ---@field client_info acp.ClientInfo
 ---@field client_capabilities acp.ClientCapabilities
@@ -371,9 +394,11 @@
 ---@field enable_mcp_nvim boolean
 ---@field mcp_nvim_guidance boolean
 ---@field auth_method string?
+---@field request_timeout_ms integer
+---@field default_adapter string
+---@field adapters table<string, acp.AdapterConfig>
 ---@field permission_strategy acp.PermissionStrategy
 ---@field permission_default acp.PermissionOptionKind
----@field request_timeout_ms integer
 
 ---@class acp.SessionPersistencePayload
 ---@field current_id string?

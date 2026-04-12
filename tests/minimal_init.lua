@@ -9,7 +9,12 @@ if not mcp_nvim_path or mcp_nvim_path == '' then
 end
 
 if vim.fn.isdirectory(mcp_nvim_path) == 0 then
-    error(string.format('mcp.nvim test dependency not found at %s; set MCP_NVIM_PATH to the plugin checkout', mcp_nvim_path))
+    error(
+        string.format(
+            'mcp.nvim test dependency not found at %s; set MCP_NVIM_PATH to the plugin checkout',
+            mcp_nvim_path
+        )
+    )
 end
 
 vim.opt.runtimepath:prepend(vim.fn.fnamemodify(mcp_nvim_path, ':p'))
@@ -34,5 +39,5 @@ require('lazy').setup({
     { 'nvim-lua/plenary.nvim', lazy = false },
 }, {
     root = vim.fn.stdpath('data') .. '/lazy',
-    lockfile = vim.fn.stdpath('config') .. '/lazy-lock.json',
+    lockfile = vim.fn.stdpath('state') .. '/lazy-lock.json',
 })

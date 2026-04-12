@@ -1,5 +1,6 @@
 .tests/
 .omx/
 .DS_Store
+.tmp_patch_review.lua
 lazy-lock.json
 nvim.log

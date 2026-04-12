@@ -16,10 +16,68 @@ local function find_permission_option(option_kind, options)
     return nil
 end
 
+---@param value any
+---@return string?
+local function non_empty_string(value)
+    if type(value) == 'string' and value ~= '' then
+        return value
+    end
+
+    return nil
+end
+
+---@param raw_input table?
+---@return string?, string?
+local function raw_mcp_target(raw_input)
+    if type(raw_input) ~= 'table' then
+        return nil, nil
+    end
+
+    local server_name = non_empty_string(raw_input.server)
+        or non_empty_string(raw_input.serverName)
+        or non_empty_string(raw_input.server_name)
+    local tool_name = non_empty_string(raw_input.tool)
+        or non_empty_string(raw_input.toolName)
+        or non_empty_string(raw_input.tool_name)
+        or non_empty_string(raw_input.name)
+
+    return server_name, tool_name
+end
+
+---@param tool_call acp.ToolCallState?
+---@param permission acp.PermissionRequest
+---@return boolean
+local function is_injected_neovim_terminal_permission(tool_call, permission)
+    local server_name, tool_name = raw_mcp_target(tool_call and tool_call.raw_input or nil)
+
+    if server_name == 'neovim' and type(tool_name) == 'string' and tool_name:match('(^|/)terminal/') ~= nil then
+        return true
+    end
+
+    local title = non_empty_string(permission.toolCall.title) or non_empty_string(tool_call and tool_call.title or nil)
+
+    return type(title) == 'string' and title:find('neovim/terminal/', 1, true) ~= nil
+end
+
 ---@param ctx acp.TransportContext
+---@param current_session acp.Session
 ---@param permission acp.PermissionRequest
 ---@return acp.PermissionOutcome
-local function default_permission_outcome(ctx, permission)
+local function default_permission_outcome(ctx, current_session, permission)
+    local matched_tool_call = ctx.session.tool_call_by_id(current_session, permission.toolCall.toolCallId)
+
+    if is_injected_neovim_terminal_permission(matched_tool_call, permission) then
+        local allowed = find_permission_option('allow_once', permission.options)
+            or find_permission_option('allow_always', permission.options)
+
+        if allowed ~= nil then
+            return {
+                outcome = 'selected',
+                optionId = allowed.optionId,
+            }
+        end
+    end
+
     local selected = find_permission_option(ctx.config.get().permission_default, permission.options)
 
     if selected == nil then
@@ -144,7 +202,7 @@ function M.handle_request(ctx, generation, permission, respond)
     end
 
     if ctx.config.get().permission_strategy == 'default' then
-        local outcome = default_permission_outcome(ctx, permission)
+        local outcome = default_permission_outcome(ctx, current_session, permission)
         ctx.session.record_approval(current_session, permission, outcome, 'default')
         ctx.rerender(current_session)
         respond({

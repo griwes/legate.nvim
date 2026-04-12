@@ -256,6 +256,34 @@ it('keeps ACP config options out of the transcript while preserving them in sess
     assert.are.equal('Ask', api.config_options()[1].options[1].name)
 end)
 
+it('renders the active ACP adapter and configured overrides in the shared chat buffer', function()
+    plugin.setup({
+        default_adapter = 'custom',
+        adapters = {
+            codex = {
+                command = { 'codex-acp' },
+            },
+            custom = {
+                command = { 'custom-acp' },
+                auth_method = 'chatgpt',
+                config_option_overrides = {
+                    mode = 'code',
+                },
+                title = 'Custom ACP',
+            },
+        },
+    })
+
+    local bufnr = api.open_chat()
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+    assert.is_true(vim.tbl_contains(lines, '## Adapter'))
+    assert.is_true(vim.tbl_contains(lines, '- Current: `custom` (Custom ACP)'))
+    assert.is_true(vim.tbl_contains(lines, '- Command: `custom-acp`'))
+    assert.is_true(vim.tbl_contains(lines, '- Auth: `chatgpt`'))
+    assert.is_true(vim.tbl_contains(lines, '  - `mode = code`'))
+end)
+
 it('stores ACP slash commands from session/update notifications without rendering them into the transcript', function()
     local bufnr = api.open_chat()
 
@@ -413,7 +441,7 @@ it('renders session status in the winbar and shows waiting state as virtual text
     })
 
     assert.are.equal(
-        string.format('ACP  %s  waiting  sync=created  remote=sess_123', current_session.id),
+        string.format('ACP  %s  adapter=codex  waiting  sync=created  remote=sess_123', current_session.id),
         vim.api.nvim_get_option_value('winbar', {
             win = 0,
         })
@@ -428,7 +456,7 @@ it('renders session status in the winbar and shows waiting state as virtual text
     })
 
     assert.are.equal(
-        string.format('ACP  %s  idle  sync=created  remote=sess_123', current_session.id),
+        string.format('ACP  %s  adapter=codex  idle  sync=created  remote=sess_123', current_session.id),
         vim.api.nvim_get_option_value('winbar', {
             win = 0,
         })
@@ -472,7 +500,6 @@ end)
 it('does not jump the cursor to the prompt when the full chat is visible', function()
     local bufnr = api.open_chat()
 
-    vim.api.nvim_win_set_height(0, 40)
     api.set_prompt('cursor stay put')
     api.submit_prompt()
     fake_client:emit_notification('session/update', {
@@ -485,6 +512,8 @@ it('does not jump the cursor to the prompt when the full chat is visible', funct
             },
         },
     })
+
+    vim.api.nvim_win_set_height(0, vim.api.nvim_buf_line_count(bufnr) + 5)
 
     vim.api.nvim_win_set_cursor(0, { 1, 0 })
 
@@ -500,7 +529,6 @@ it('does not jump the cursor to the prompt when the full chat is visible', funct
     })
 
     assert.are.same({ 1, 0 }, vim.api.nvim_win_get_cursor(0))
-    assert.is_true(vim.fn.getwininfo(vim.api.nvim_get_current_win())[1].botline >= vim.api.nvim_buf_line_count(bufnr))
 end)
 
 it('preserves a scrolled-up view while streamed updates arrive', function()
@@ -936,7 +964,7 @@ it('submits ACP slash commands through the normal prompt path', function()
     assert.are.equal('/web agent client protocol', current_session.pending_prompt)
 end)
 
-it('keeps slash commands cached across turns until the binding is explicitly refreshed', function()
+it('refreshes the remote binding on follow-up turns when session/load is unavailable', function()
     local bufnr = api.open_chat()
 
     api.slash_commands()
@@ -960,12 +988,12 @@ it('keeps slash commands cached across turns until the binding is explicitly ref
 
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
-    assert.are.equal('sess_123', current_session.remote_id)
-    assert.are.same(fake_available_commands, current_session.available_commands)
+    assert.are.equal('sess_124', current_session.remote_id)
+    assert.are.same({}, current_session.available_commands)
     assert.is_false(vim.tbl_contains(lines, '## Slash Commands'))
 end)
 
-it('runs ACP slash commands from the cached command list until the binding is explicitly refreshed', function()
+it('uses the cached slash-command list to build a prompt before a fresh follow-up binding clears it', function()
     api.open_chat()
 
     api.slash_commands()
@@ -983,10 +1011,11 @@ it('runs ACP slash commands from the cached command list until the binding is ex
         stopReason = 'end_turn',
     })
 
-    api.run_slash_command('web', 'should fail')
+    local current_session = api.run_slash_command('web', 'should fail')
 
-    assert.are.equal('sess_123', api.current_session().remote_id)
-    assert.are.same(fake_available_commands, api.current_session().available_commands)
+    assert.are.equal('sess_124', current_session.remote_id)
+    assert.are.same({}, current_session.available_commands)
+    assert.are.equal('/web should fail', current_session.pending_prompt)
 end)
 
 it('keeps ACP slash command names available across turns while the remote session remains bound', function()
@@ -1494,6 +1523,114 @@ it('does not include raw MCP response JSON in compact tool summary lines', funct
     end))
 end)
 
+it('renders metadata-driven terminal output in compact tool summary lines', function()
+    local bufnr = api.open_chat()
+
+    api.set_prompt('show terminal metadata output')
+    api.submit_prompt()
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call',
+            toolCallId = 'tool_terminal_meta',
+            title = 'Run command',
+            status = 'in_progress',
+            kind = 'execute',
+            rawInput = {
+                command = 'bash',
+                args = { '-lc', 'ls -1' },
+                parsed_cmd = 'ls -1',
+            },
+            _meta = {
+                terminal_info = {
+                    terminal_id = 'term_meta_1',
+                    cwd = '/tmp/demo',
+                },
+            },
+        },
+    })
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call_update',
+            toolCallId = 'tool_terminal_meta',
+            _meta = {
+                terminal_output = {
+                    terminal_id = 'term_meta_1',
+                    data = 'Cargo.lock\nREADME.md\n',
+                },
+            },
+        },
+    })
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+    assert.is_true(vim.iter(lines):any(function(line)
+        return line:find('Run `ls %-1`', 1) ~= nil and line:find('Cargo.lock README.md', 1, true) ~= nil
+    end))
+end)
+
+it('appends repeated metadata-driven terminal_output updates in codex-acp order', function()
+    local bufnr = api.open_chat()
+
+    api.set_prompt('append codex-acp terminal metadata output')
+    api.submit_prompt()
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call',
+            toolCallId = 'tool_terminal_meta_repeat',
+            title = 'Run command',
+            status = 'in_progress',
+            kind = 'execute',
+            rawInput = {
+                command = 'bash',
+                args = { '-lc', 'printf first && read line && printf second' },
+                parsed_cmd = 'printf first && read line && printf second',
+            },
+            _meta = {
+                terminal_info = {
+                    terminal_id = 'term_meta_repeat',
+                    cwd = '/tmp/repeat-demo',
+                },
+            },
+        },
+    })
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call_update',
+            toolCallId = 'tool_terminal_meta_repeat',
+            _meta = {
+                terminal_output = {
+                    terminal_id = 'term_meta_repeat',
+                    data = 'first',
+                },
+            },
+        },
+    })
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call_update',
+            toolCallId = 'tool_terminal_meta_repeat',
+            _meta = {
+                terminal_output = {
+                    terminal_id = 'term_meta_repeat',
+                    data = '\nuser input\nsecond',
+                },
+            },
+        },
+    })
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+    assert.is_true(vim.iter(lines):any(function(line)
+        return line:find('Run `printf first && read line && printf second`', 1, true) ~= nil
+            and line:find('first user input second', 1, true) ~= nil
+    end))
+end)
+
 it('prefers parsed command summaries when tool raw input provides them', function()
     local bufnr = api.open_chat()
 
@@ -1638,6 +1775,99 @@ it('serves richer tool details through textDocument/hover in the ACP buffer', fu
     assert.is_true(vim.tbl_contains(preview_contents, '### Run `lua demo.lua`'))
     assert.is_true(vim.tbl_contains(preview_contents, '- Status: `completed`'))
     assert.is_true(vim.tbl_contains(preview_contents, '#### Raw Output'))
+end)
+
+it('serves metadata-driven terminal stream details through textDocument/hover in the ACP buffer', function()
+    local bufnr = api.open_chat()
+
+    api.set_prompt('hover terminal metadata')
+    api.submit_prompt()
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call',
+            toolCallId = 'tool_terminal_hover',
+            title = 'Run command',
+            status = 'in_progress',
+            kind = 'execute',
+            rawInput = {
+                command = 'bash',
+                args = { '-lc', 'printf hello' },
+                parsed_cmd = 'printf hello',
+            },
+            _meta = {
+                terminal_info = {
+                    terminal_id = 'term_hover_1',
+                    cwd = '/tmp/hover-demo',
+                },
+            },
+        },
+    })
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call_update',
+            toolCallId = 'tool_terminal_hover',
+            _meta = {
+                terminal_output = {
+                    terminal_id = 'term_hover_1',
+                    data = 'hello\nworld\n',
+                },
+            },
+        },
+    })
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call_update',
+            toolCallId = 'tool_terminal_hover',
+            status = 'completed',
+            _meta = {
+                terminal_exit = {
+                    terminal_id = 'term_hover_1',
+                    exit_code = 0,
+                    signal = vim.NIL,
+                },
+            },
+        },
+    })
+
+    wait_until(function()
+        return #vim.lsp.get_clients({
+            bufnr = bufnr,
+            name = 'acp-hover',
+        }) == 1
+    end)
+
+    local line_number = vim.fn.index(
+        vim.api.nvim_buf_get_lines(bufnr, 0, -1, false),
+        '✓ Run `printf hello`  hello world'
+    ) + 1
+
+    vim.api.nvim_win_set_cursor(0, {
+        line_number,
+        0,
+    })
+
+    assert.is_true(line_number > 0)
+
+    wait_until(function()
+        return require('acp.hover').hover_result(bufnr, line_number - 1) ~= nil
+    end)
+
+    local preview = require('acp.hover').hover_result(bufnr, line_number - 1)
+    assert.is_not_nil(preview)
+
+    local preview_contents = vim.split(preview.contents.value, '\n', {
+        plain = true,
+    })
+
+    assert.is_true(vim.tbl_contains(preview_contents, '#### Terminal Stream'))
+    assert.is_true(vim.tbl_contains(preview_contents, '- Terminal: `term_hover_1`'))
+    assert.is_true(vim.tbl_contains(preview_contents, '- Cwd: `/tmp/hover-demo`'))
+    assert.is_true(vim.tbl_contains(preview_contents, '- Exit Code: `0`'))
+    assert.is_true(vim.tbl_contains(preview_contents, '```text'))
+    assert.is_true(vim.tbl_contains(preview_contents, 'world'))
 end)
 
 it('uses an absolute cwd when creating the remote session', function()

@@ -54,9 +54,10 @@ local function session_line(current_session)
     local marker = current_session.id == selected_id and '*' or ' '
 
     return string.format(
-        '%s %s  [%s]  remote=%s  sync=%s  messages=%d',
+        '%s %s  adapter=%s  [%s]  remote=%s  sync=%s  messages=%d',
         marker,
         current_session.id,
+        config.session_adapter_name(current_session),
         current_session.status,
         current_session.remote_id or 'unbound',
         current_session.remote_sync_state,
@@ -95,6 +96,33 @@ local function slash_command_line(command)
     end
 
     return line
+end
+
+---@param current_session acp.Session
+---@return acp.AdapterConfig
+local function adapter_for_session(current_session)
+    return config.adapter_for_session(current_session)
+end
+
+---@param current_session acp.Session
+---@return string
+local function adapter_line(current_session)
+    local selected_session = session.current()
+    local selected_id = selected_session and selected_session.id or nil
+    local marker = current_session.id == selected_id and '*' or ' '
+    local adapter_name = config.session_adapter_name(current_session)
+    local adapter = adapter_for_session(current_session)
+    local auth_method = adapter.auth_method or 'auto'
+
+    return string.format(
+        '%s %s  title=%s  auth=%s  command=%s  overrides=%d',
+        marker,
+        adapter_name,
+        adapter.title or adapter_name,
+        auth_method,
+        table.concat(adapter.command, ' '),
+        vim.tbl_count(adapter.config_option_overrides or {})
+    )
 end
 
 ---@param options acp.SessionConfigOption[]
@@ -145,6 +173,26 @@ local function slash_command_picker_formatter(commands)
     end)
 end
 
+---@param current_session acp.Session
+---@return fun(adapter_name: string): string
+local function adapter_picker_formatter(current_session)
+    local current_adapter_name = config.session_adapter_name(current_session)
+
+    return function(adapter_name)
+        local adapter = config.adapter(adapter_name)
+        local marker = adapter_name == current_adapter_name and '*' or ' '
+
+        return string.format(
+            '%s %s  id=%s  auth=%s  %s',
+            marker,
+            adapter.title or adapter_name,
+            adapter_name,
+            adapter.auth_method or 'auto',
+            table.concat(adapter.command, ' ')
+        )
+    end
+end
+
 ---@param sessions acp.Session[]
 ---@param prompt string
 ---@param on_choice fun(selected_session: acp.Session)
@@ -182,7 +230,7 @@ end
 ---@return acp.Session
 local function active_session()
     if config.get().auto_create_session then
-        return session.ensure()
+        return session.ensure(config.default_adapter_name())
     end
 
     local current = session.current()
@@ -339,7 +387,8 @@ local function ensure_slash_commands(current_session, opts)
         return
     end
 
-    if transport_remote_id ~= nil
+    if
+        transport_remote_id ~= nil
         and current_session.turn_id == 0
         and current_session.status ~= 'cancelled'
         and #current_session.available_commands > 0
@@ -485,7 +534,7 @@ end
 function M.new_session()
     store_draft(session.current())
 
-    local current_session = session.create()
+    local current_session = session.create(config.default_adapter_name())
 
     render.render(current_session, current_session.draft_prompt)
 
@@ -511,6 +560,49 @@ function M.session_lines()
 
     for _, current_session in ipairs(session.list()) do
         table.insert(lines, session_line(current_session))
+    end
+
+    return lines
+end
+
+---Return the configured ACP adapter names.
+---@return string[]
+function M.adapter_names()
+    return config.adapter_names()
+end
+
+---Return the adapter selected for the resolved ACP session.
+---@param session_id? string
+---@return string
+function M.adapter_name(session_id)
+    local current_session = session_id and resolve_session(session_id) or session.current()
+    return config.session_adapter_name(current_session)
+end
+
+---Return formatted ACP adapter lines for command-line or picker use.
+---@param session_id? string
+---@return string[]
+function M.adapter_lines(session_id)
+    local current_session = session_id and resolve_session(session_id) or session.current()
+    local current_adapter_name = config.session_adapter_name(current_session)
+    local lines = {}
+
+    for _, adapter_name in ipairs(config.adapter_names()) do
+        local adapter = config.adapter(adapter_name)
+        local marker = adapter_name == current_adapter_name and '*' or ' '
+
+        table.insert(
+            lines,
+            string.format(
+                '%s %s  title=%s  auth=%s  command=%s  overrides=%d',
+                marker,
+                adapter_name,
+                adapter.title or adapter_name,
+                adapter.auth_method or 'auto',
+                table.concat(adapter.command, ' '),
+                vim.tbl_count(adapter.config_option_overrides or {})
+            )
+        )
     end
 
     return lines
@@ -785,6 +877,57 @@ function M.pick_session()
     end)
 end
 
+---Select an ACP adapter for a local session and reset stale remote binding state.
+---@param adapter_name string
+---@param session_id? string
+---@return acp.Session
+function M.select_adapter(adapter_name, session_id)
+    local current_session = resolve_session(session_id)
+    assert_session_binding_change_allowed(current_session, 'switch adapter for')
+    config.adapter(adapter_name)
+
+    if current_session.adapter_name == adapter_name then
+        return current_session
+    end
+
+    local prompt = visible_prompt(current_session)
+
+    session.set_adapter(current_session, adapter_name)
+    session.reset_adapter_runtime_state(current_session)
+    transport.clear()
+
+    local selected_session = session.current()
+
+    if buffer.get() ~= nil and selected_session ~= nil and selected_session.id == current_session.id then
+        render.render(current_session, prompt)
+    end
+
+    return current_session
+end
+
+---Open a picker for ACP adapters and switch the resolved session to the chosen adapter.
+---@param session_id? string
+function M.pick_adapter(session_id)
+    local current_session = resolve_session(session_id)
+    local adapter_names = config.adapter_names()
+
+    if #adapter_names == 0 then
+        vim.notify('No ACP adapters are configured')
+        return
+    end
+
+    vim.ui.select(adapter_names, {
+        prompt = string.format('Select ACP adapter for %s', current_session.id),
+        format_item = adapter_picker_formatter(current_session),
+    }, function(selected_adapter_name)
+        if selected_adapter_name == nil then
+            return
+        end
+
+        M.select_adapter(selected_adapter_name, current_session.id)
+    end)
+end
+
 ---Select a local ACP session and rerender the shared chat buffer.
 ---@param session_id string
 ---@return acp.Session
@@ -876,7 +1019,8 @@ function M.select_approval_option(selection, session_id)
             if pending ~= nil and pending.request_id == request_id then
                 selection = option_id
                 if session.pending_approval(current_session) ~= pending then
-                    pending = session.promote_pending_approval_by_request_id(current_session, pending.request_id) or pending
+                    pending = session.promote_pending_approval_by_request_id(current_session, pending.request_id)
+                        or pending
                 end
             end
         end
@@ -1139,14 +1283,16 @@ end
 
 ---Return the configured ACP MCP servers without runtime injection side effects.
 ---@return table[]
-function M.mcp_servers()
-    return mcp_runtime.static_servers()
+function M.mcp_servers(session_id)
+    local current_session = session_id and resolve_session(session_id) or session.current()
+    return mcp_runtime.static_servers(current_session)
 end
 
 ---Return the effective ACP MCP servers including runtime injection.
 ---@return table[]
-function M.effective_mcp_servers()
-    return mcp_runtime.effective_servers({ passive = false })
+function M.effective_mcp_servers(session_id)
+    local current_session = session_id and resolve_session(session_id) or session.current()
+    return mcp_runtime.effective_servers(current_session, { passive = false })
 end
 
 ---Return the effective ACP terminal backend name.

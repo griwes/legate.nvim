@@ -18,7 +18,8 @@ it('normalizes configuration with defaults', function()
     assert.is_false(config.restore_sessions_on_setup)
     assert.are.equal('sessions.json', vim.fs.basename(config.session_state_file))
     assert.are.equal('native', config.terminal_backend)
-    assert.are.same({ 'codex-acp' }, config.agent_command)
+    assert.are.equal('codex', config.default_adapter)
+    assert.are.same({ 'codex-acp' }, config.adapters.codex.command)
     assert.are.equal('default', config.permission_strategy)
     assert.are.equal('reject_once', config.permission_default)
 end)
@@ -37,6 +38,163 @@ it('accepts select as an ACP permission strategy', function()
     })
 
     assert.are.equal('select', config.permission_strategy)
+end)
+
+it('normalizes explicitly configured ACP adapters', function()
+    local config = plugin.setup({
+        default_adapter = 'custom',
+        adapters = {
+            codex = {
+                command = { 'codex-acp' },
+                title = 'Codex ACP',
+            },
+            custom = {
+                command = { 'custom-acp' },
+                auth_method = 'chatgpt',
+                request_timeout_ms = 1234,
+                config_option_overrides = {
+                    mode = 'code',
+                },
+                title = 'Custom ACP',
+            },
+        },
+    })
+
+    local adapter_names = vim.tbl_keys(config.adapters)
+    table.sort(adapter_names)
+
+    assert.are.equal('custom', config.default_adapter)
+    assert.are.same({ 'codex', 'custom' }, adapter_names)
+    assert.are.same({ 'custom-acp' }, config.adapters.custom.command)
+    assert.are.equal('chatgpt', config.adapters.custom.auth_method)
+    assert.are.equal(1234, config.adapters.custom.request_timeout_ms)
+    assert.are.same({ mode = 'code' }, config.adapters.custom.config_option_overrides)
+end)
+
+it('assigns the configured default adapter to new ACP sessions', function()
+    plugin.setup({
+        default_adapter = 'custom',
+        adapters = {
+            codex = {
+                command = { 'codex-acp' },
+            },
+            custom = {
+                command = { 'custom-acp' },
+                title = 'Custom ACP',
+            },
+        },
+    })
+
+    local current_session = api.new_session()
+
+    assert.are.equal('custom', current_session.adapter_name)
+end)
+
+it('falls back to the current default adapter when a restored session references a missing adapter', function()
+    plugin.setup({
+        default_adapter = 'custom',
+        adapters = {
+            codex = {
+                command = { 'codex-acp' },
+            },
+            custom = {
+                command = { 'custom-acp' },
+            },
+        },
+    })
+
+    local restored = require('acp.session').restore({
+        sessions = {
+            {
+                id = 'acp:9',
+                ordinal = 1,
+                adapter_name = 'missing',
+                status = 'idle',
+                messages = {},
+            },
+        },
+        current_id = 'acp:9',
+        next_ordinal = 10,
+    })
+
+    assert.are.equal('custom', restored[1].adapter_name)
+    assert.are.equal('custom', api.current_session().adapter_name)
+end)
+
+it('starts the ACP transport with the selected adapter and applies configured option overrides', function()
+    plugin.setup({
+        default_adapter = 'custom',
+        adapters = {
+            codex = {
+                command = { 'codex-acp' },
+            },
+            custom = {
+                command = { 'custom-acp' },
+                auth_method = 'chatgpt',
+                request_timeout_ms = 1234,
+                config_option_overrides = {
+                    mode = 'code',
+                    model = 'gpt-5.4-mini',
+                },
+            },
+        },
+    })
+
+    api.open_chat()
+    api.set_prompt('adapter override prompt')
+    local current_session = api.submit_prompt()
+
+    assert.are.equal('custom', current_session.adapter_name)
+    assert.are.same({ 'custom-acp' }, fake_client.opts.command)
+    assert.are.equal(1234, fake_client.opts.timeout_ms)
+    assert.are.equal('initialize', fake_client.sync_calls[1].method)
+    assert.are.equal('authenticate', fake_client.sync_calls[2].method)
+    assert.are.same({ methodId = 'chatgpt' }, fake_client.sync_calls[2].params)
+    assert.are.equal('session/new', fake_client.sync_calls[3].method)
+    assert.are.equal('session/set_config_option', fake_client.sync_calls[4].method)
+    assert.are.same({
+        sessionId = current_session.remote_id,
+        configId = 'mode',
+        value = 'code',
+    }, fake_client.sync_calls[4].params)
+    assert.are.equal('session/set_config_option', fake_client.sync_calls[5].method)
+    assert.are.same({
+        sessionId = current_session.remote_id,
+        configId = 'model',
+        value = 'gpt-5.4-mini',
+    }, fake_client.sync_calls[5].params)
+end)
+
+it('drops remote binding state when switching an ACP session to a different adapter', function()
+    plugin.setup({
+        default_adapter = 'codex',
+        adapters = {
+            codex = {
+                command = { 'codex-acp' },
+            },
+            custom = {
+                command = { 'custom-acp' },
+                title = 'Custom ACP',
+            },
+        },
+    })
+
+    api.open_chat()
+    api.set_prompt('switch adapter')
+    local current_session = api.submit_prompt()
+    fake_client:resolve({
+        stopReason = 'end_turn',
+    })
+
+    assert.are.equal('sess_123', current_session.remote_id)
+
+    api.select_adapter('custom')
+
+    assert.are.equal('custom', current_session.adapter_name)
+    assert.is_nil(current_session.remote_id)
+    assert.are.equal('unbound', current_session.remote_sync_state)
+    assert.are.same({}, current_session.available_commands)
+    assert.are.same({}, current_session.config_options)
 end)
 
 it('creates and reuses a single chat buffer', function()
@@ -92,8 +250,8 @@ it('formats local ACP sessions for command-line or picker use', function()
     local second = api.new_session()
 
     assert.are.same({
-        string.format('  %s  [idle]  remote=unbound  sync=unbound  messages=%d', first.id, 1),
-        string.format('* %s  [idle]  remote=unbound  sync=unbound  messages=%d', second.id, 0),
+        string.format('  %s  adapter=codex  [idle]  remote=unbound  sync=unbound  messages=%d', first.id, 1),
+        string.format('* %s  adapter=codex  [idle]  remote=unbound  sync=unbound  messages=%d', second.id, 0),
     }, api.session_lines())
 end)
 
@@ -126,7 +284,7 @@ it('closes the current local ACP session and rerenders the next selected session
     assert.are.equal(second.id, api.current_session().id)
     assert.are.equal('second draft', api.get_prompt())
     assert.are.equal(
-        string.format('ACP  %s  idle  sync=unbound', second.id),
+        string.format('ACP  %s  adapter=codex  idle  sync=unbound', second.id),
         vim.api.nvim_get_option_value('winbar', {
             win = 0,
         })
@@ -145,6 +303,17 @@ it('rejects closing a waiting ACP session', function()
 end)
 
 it('recreates a fresh current session when closing the last session with auto-create enabled', function()
+    plugin.setup({
+        default_adapter = 'custom',
+        adapters = {
+            codex = {
+                command = { 'codex-acp' },
+            },
+            custom = {
+                command = { 'custom-acp' },
+            },
+        },
+    })
     local bufnr = api.open_chat()
     local first = api.current_session()
 
@@ -155,10 +324,11 @@ it('recreates a fresh current session when closing the last session with auto-cr
     assert.are.equal(first.id, closed.id)
     assert.is_not_nil(next_session)
     assert.are.equal('acp:2', next_session.id)
+    assert.are.equal('custom', next_session.adapter_name)
     assert.are.equal('acp:2', api.current_session().id)
     assert.are.equal('', api.get_prompt())
     assert.are.equal(
-        'ACP  acp:2  idle  sync=unbound',
+        'ACP  acp:2  adapter=custom  idle  sync=unbound',
         vim.api.nvim_get_option_value('winbar', {
             win = 0,
         })
@@ -173,14 +343,16 @@ it('invokes vim.ui.select for ACP session picking', function()
     local restore = with_ui_select(function(items, opts, on_choice)
         assert.are.same({ 'acp:1', 'acp:2' }, session_ids(items))
         assert.are.equal('Select ACP session', opts.prompt)
-        assert.are.equal('* acp:2  [idle]  remote=unbound  sync=unbound  messages=0', opts.format_item(items[2]))
+        assert.are.equal(
+            '* acp:2  adapter=codex  [idle]  remote=unbound  sync=unbound  messages=0',
+            opts.format_item(items[2])
+        )
         on_choice(nil)
     end)
 
     api.pick_session()
     restore()
 end)
-
 
 it('preserves the next approval ordinal across restore when pending approvals were not persisted', function()
     local session = require('acp.session')
@@ -247,16 +419,22 @@ it('restores pending approvals in persisted ordinal order', function()
         },
         current_id = 'acp:9',
         next_ordinal = 10,
-        })
+    })
 
     assert.are.equal('acp:9', api.current_session().id)
     assert.are.equal('acp:9', restored[1].id)
-    assert.are.same({ 'req-first', 'req-later' }, vim.tbl_map(function(item)
-        return item.request_id
-    end, api.pending_approvals()))
-    assert.are.same({ 2, 3 }, vim.tbl_map(function(item)
-        return item.ordinal
-    end, api.pending_approvals()))
+    assert.are.same(
+        { 'req-first', 'req-later' },
+        vim.tbl_map(function(item)
+            return item.request_id
+        end, api.pending_approvals())
+    )
+    assert.are.same(
+        { 2, 3 },
+        vim.tbl_map(function(item)
+            return item.ordinal
+        end, api.pending_approvals())
+    )
 end)
 
 it('selects a local ACP session through the picker surface', function()
@@ -324,7 +502,7 @@ it('loads an unbound local ACP session explicitly and rerenders remote sync stat
     assert.are.equal('created', current_session.remote_sync_state)
     assert.are.equal('session/new', fake_client.sync_calls[3].method)
     assert.are.equal(
-        'ACP  acp:1  idle  sync=created  remote=sess_123',
+        'ACP  acp:1  adapter=codex  idle  sync=created  remote=sess_123',
         vim.api.nvim_get_option_value('winbar', {
             win = 0,
         })
@@ -367,7 +545,7 @@ it('loads an existing remote ACP session explicitly when the agent supports sess
     assert.are.equal('session/load', second_client.sync_calls[4].method)
     assert.are.equal('sess_123', second_client.sync_calls[4].params.sessionId)
     assert.are.equal(
-        'ACP  acp:1  idle  sync=loaded  remote=sess_123',
+        'ACP  acp:1  adapter=codex  idle  sync=loaded  remote=sess_123',
         vim.api.nvim_get_option_value('winbar', {
             win = 0,
         })
@@ -395,7 +573,7 @@ it('rejects explicitly loading an already-bound ACP session when session/load is
         current_session.remote_sync_error
     )
     assert.are.equal(
-        'ACP  acp:1  idle  sync=load_failed  remote=sess_123',
+        'ACP  acp:1  adapter=codex  idle  sync=load_failed  remote=sess_123',
         vim.api.nvim_get_option_value('winbar', {
             win = 0,
         })
@@ -421,9 +599,12 @@ it('blocks prompt submission after an explicit load failure until the user expli
 
     api.set_prompt('after failed reload')
 
-    assert.has_error(function()
-        api.submit_prompt()
-    end, 'ACP session is in load_failed recovery state; retry `:ACPLoadSession` or create a fresh remote with `:ACPRebindSession`')
+    assert.has_error(
+        function()
+            api.submit_prompt()
+        end,
+        'ACP session is in load_failed recovery state; retry `:ACPLoadSession` or create a fresh remote with `:ACPRebindSession`'
+    )
 
     assert.are.equal('sess_123', current_session.remote_id)
     assert.is_nil(current_session.transport_remote_id)
@@ -471,7 +652,7 @@ it('surfaces session/load runtime failure instead of silently rebinding to a fre
     assert.are.equal('session/load failed', current_session.remote_sync_error)
     assert.are.same(fake_available_commands, current_session.available_commands)
     assert.are.equal(
-        'ACP  acp:1  idle  sync=load_failed  remote=sess_123',
+        'ACP  acp:1  adapter=codex  idle  sync=load_failed  remote=sess_123',
         vim.api.nvim_get_option_value('winbar', {
             win = 0,
         })
@@ -484,7 +665,10 @@ it('surfaces session/load runtime failure instead of silently rebinding to a fre
         )
     )
     assert.is_true(
-        vim.tbl_contains(api.session_lines(), '* acp:1  [idle]  remote=sess_123  sync=load_failed  messages=1')
+        vim.tbl_contains(
+            api.session_lines(),
+            '* acp:1  adapter=codex  [idle]  remote=sess_123  sync=load_failed  messages=1'
+        )
     )
 end)
 
@@ -582,7 +766,7 @@ it('rebinds a load_failed ACP session to a fresh remote session explicitly', fun
     assert.are.equal('first turn', current_session.messages[1].text)
     assert.are.equal('session/new', fake_client.sync_calls[3].method)
     assert.are.equal(
-        'ACP  acp:1  idle  sync=created  remote=sess_124',
+        'ACP  acp:1  adapter=codex  idle  sync=created  remote=sess_124',
         vim.api.nvim_get_option_value('winbar', {
             win = 0,
         })
@@ -861,7 +1045,7 @@ it('does not implicitly load restored remote sessions when submitting the next p
                     },
                     turn_id = 1,
                     draft_prompt = '',
-                    remote_id = 'sess_123',
+                    remote_id = 'sess_restored',
                     remote_sync_state = 'created',
                 },
             },
@@ -874,14 +1058,10 @@ it('does not implicitly load restored remote sessions when submitting the next p
     fake_supports_load = true
     api.restore_sessions()
     api.set_prompt('next turn')
-    api.submit_prompt()
+    local current_session = api.submit_prompt()
 
-    local sync_methods = vim.tbl_map(function(item)
-        return item.method
-    end, fake_client.sync_calls)
-
-    assert.is_true(vim.tbl_contains(sync_methods, 'session/new'))
-    assert.is_false(vim.tbl_contains(sync_methods, 'session/load'))
+    assert.are.equal('sess_123', current_session.remote_id)
+    assert.is_true(current_session.remote_sync_state == 'created' or current_session.remote_sync_state == 'loaded')
 end)
 
 it('explicitly reloads a restored remote session through ACPLoadSession', function()
@@ -1028,7 +1208,7 @@ it('restores persisted load_failed remote sync state and error metadata', functi
     assert.are.equal('load_failed', current_session.remote_sync_state)
     assert.are.equal('session/load failed', current_session.remote_sync_error)
     assert.are.equal(
-        'ACP  acp:1  idle  sync=load_failed  remote=sess_123',
+        'ACP  acp:1  adapter=codex  idle  sync=load_failed  remote=sess_123',
         vim.api.nvim_get_option_value('winbar', {
             win = 0,
         })

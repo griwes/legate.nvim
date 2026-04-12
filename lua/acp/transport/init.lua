@@ -1,5 +1,6 @@
 local buffer = require('acp.buffer')
 local config = require('acp.config')
+local config_option = require('acp.config_option')
 local context = require('acp.transport.context')
 local fs = require('acp.fs')
 local handlers = require('acp.handlers')
@@ -32,6 +33,7 @@ end
 ---@field agent_info acp.AgentInfo?
 ---@field agent_capabilities acp.AgentCapabilities?
 ---@field auth_methods acp.AuthMethod[]
+---@field bound_adapter_name string?
 ---@field bound_local_session_id string?
 ---@field bound_remote_session_id string?
 ---@field active_session acp.Session?
@@ -47,6 +49,7 @@ local state = {
     agent_info = nil,
     agent_capabilities = nil,
     auth_methods = {},
+    bound_adapter_name = nil,
     bound_local_session_id = nil,
     bound_remote_session_id = nil,
     active_session = nil,
@@ -60,9 +63,12 @@ local state = {
 ---@param current_session acp.Session
 ---@return boolean
 local function should_rebind_connection(current_session)
-    return client ~= nil
-        and session.transport_remote_id(current_session) ~= nil
-        and session.transport_remote_id(current_session) ~= state.bound_remote_session_id
+    return (client ~= nil and state.bound_adapter_name ~= config.session_adapter_name(current_session))
+        or (
+            client ~= nil
+            and session.transport_remote_id(current_session) ~= nil
+            and session.transport_remote_id(current_session) ~= state.bound_remote_session_id
+        )
 end
 
 ---@param generation integer
@@ -153,6 +159,7 @@ local function reset_connection()
     state.agent_info = nil
     state.agent_capabilities = nil
     state.auth_methods = {}
+    state.bound_adapter_name = nil
     state.bound_local_session_id = nil
     state.bound_remote_session_id = nil
     state.active_session = nil
@@ -237,14 +244,16 @@ local function resolve_cwd(raw_path)
     return vim.fn.fnamemodify(path, ':p')
 end
 
+---@param current_session acp.Session
 ---@param cwd_override string?
 ---@param session_id string?
 ---@return table
-local function session_request_params(cwd_override, session_id)
-    local cwd = resolve_cwd(cwd_override or config.get().cwd)
+local function session_request_params(current_session, cwd_override, session_id)
+    local adapter = config.adapter_for_session(current_session)
+    local cwd = resolve_cwd(cwd_override or adapter.cwd)
     local params = {
         cwd = cwd,
-        mcpServers = mcp_runtime.effective_servers(),
+        mcpServers = mcp_runtime.effective_servers(current_session),
     }
 
     if session_id ~= nil then
@@ -379,7 +388,7 @@ local function prompt_blocks(current_session, prompt)
             local text = message.text
 
             if message.role == 'user' then
-                text = mcp_guidance.prepend(text, state.agent_capabilities)
+                text = mcp_guidance.prepend(text, state.agent_capabilities, current_session)
             end
 
             vim.list_extend(history, format_history_message(message.role, text))
@@ -412,7 +421,7 @@ end
 ---@param prompt string
 ---@return acp.ContentBlock[]
 local function prompt_content(current_session, prompt)
-    local guided_prompt = mcp_guidance.prepend(prompt, state.agent_capabilities)
+    local guided_prompt = mcp_guidance.prepend(prompt, state.agent_capabilities, current_session)
 
     if state.loaded_existing_session then
         return {
@@ -481,22 +490,25 @@ local function build_context()
     })
 end
 
+---@param current_session acp.Session
 ---@return acp.RpcClient
-local function ensure_client()
+local function ensure_client(current_session)
     if client ~= nil then
         return client
     end
 
+    local adapter = config.adapter_for_session(current_session)
     client_generation = client_generation + 1
     local generation = client_generation
     client_router = router.new(build_context())
     local generation_router = client_router
+    state.bound_adapter_name = config.session_adapter_name(current_session)
 
     client = rpc_factory({
-        command = config.get().agent_command,
-        cwd = resolve_cwd(config.get().cwd),
-        env = config.get().agent_env,
-        timeout_ms = config.get().request_timeout_ms,
+        command = adapter.command,
+        cwd = resolve_cwd(adapter.cwd),
+        env = adapter.env,
+        timeout_ms = adapter.request_timeout_ms,
         on_notification = function(method, params)
             generation_router:dispatch_notification(generation, method, params)
         end,
@@ -520,10 +532,12 @@ local function initialize(current_session)
         return
     end
 
-    local result, rpc_error = ensure_client():request_sync(methods.INITIALIZE, {
-        protocolVersion = config.get().protocol_version,
-        clientCapabilities = config.get().client_capabilities,
-        clientInfo = config.get().client_info,
+    local adapter = config.adapter_for_session(current_session)
+
+    local result, rpc_error = ensure_client(current_session):request_sync(methods.INITIALIZE, {
+        protocolVersion = adapter.protocol_version,
+        clientCapabilities = adapter.client_capabilities,
+        clientInfo = adapter.client_info,
     })
 
     if rpc_error ~= nil then
@@ -531,7 +545,7 @@ local function initialize(current_session)
     end
 
     ---@cast result acp.InitializeResult
-    if result.protocolVersion ~= config.get().protocol_version then
+    if result.protocolVersion ~= adapter.protocol_version then
         reset_connection()
         error(string.format('Unsupported ACP protocol version: %s', result.protocolVersion))
     end
@@ -545,7 +559,8 @@ local function initialize(current_session)
     session.set_agent_info(current_session, result.agentInfo)
 end
 
-local function authenticate()
+---@param current_session acp.Session
+local function authenticate(current_session)
     if state.authenticated then
         return
     end
@@ -555,8 +570,9 @@ local function authenticate()
         return
     end
 
-    local method_id = config.get().auth_method or state.auth_methods[1].id
-    local result, rpc_error = ensure_client():request_sync(methods.AUTHENTICATE, {
+    local adapter = config.adapter_for_session(current_session)
+    local method_id = adapter.auth_method or state.auth_methods[1].id
+    local result, rpc_error = ensure_client(current_session):request_sync(methods.AUTHENTICATE, {
         methodId = method_id,
     })
 
@@ -575,7 +591,60 @@ local function prepare_connection(current_session)
     end
 
     initialize(current_session)
-    authenticate()
+    authenticate(current_session)
+end
+
+---@param current_session acp.Session
+local function apply_adapter_config_option_overrides(current_session)
+    local adapter = config.adapter_for_session(current_session)
+    local overrides = adapter.config_option_overrides or {}
+
+    if current_session.remote_id == nil or vim.tbl_isempty(overrides) then
+        return
+    end
+
+    local override_ids = vim.tbl_keys(overrides)
+    table.sort(override_ids)
+
+    for _, config_id in ipairs(override_ids) do
+        local option = nil
+
+        for _, candidate in ipairs(current_session.config_options or {}) do
+            if candidate.id == config_id then
+                option = candidate
+                break
+            end
+        end
+
+        if option == nil then
+            error(string.format('ACP adapter override references unknown config option: %s', config_id))
+        end
+
+        local value = overrides[config_id]
+        local allowed = {}
+
+        for _, choice in ipairs(config_option.choices(option)) do
+            allowed[choice.value.value] = true
+        end
+
+        if not allowed[value] then
+            error(string.format('ACP adapter override uses invalid value for %s: %s', config_id, tostring(value)))
+        end
+
+        if option.currentValue ~= value then
+            local result, rpc_error = ensure_client(current_session):request_sync(methods.SESSION_SET_CONFIG_OPTION, {
+                sessionId = current_session.remote_id,
+                configId = config_id,
+                value = value,
+            })
+
+            if rpc_error ~= nil then
+                error(rpc_error.message)
+            end
+
+            session.set_config_options(current_session, result.configOptions or {})
+        end
+    end
 end
 
 ---@param current_session acp.Session
@@ -622,8 +691,9 @@ local function establish_session(current_session, opts)
         if state.agent_capabilities ~= nil and state.agent_capabilities.loadSession then
             state.active_session = current_session
             state.loading_existing_session = true
-            local params, cwd = session_request_params(current_session.cwd, previous_transport_remote_id)
-            local result, rpc_error = ensure_client():request_sync(methods.SESSION_LOAD, params)
+            local params, cwd =
+                session_request_params(current_session, current_session.cwd, previous_transport_remote_id)
+            local result, rpc_error = ensure_client(current_session):request_sync(methods.SESSION_LOAD, params)
             state.loading_existing_session = false
 
             if rpc_error == nil then
@@ -636,6 +706,7 @@ local function establish_session(current_session, opts)
                 session.set_cwd(current_session, cwd)
                 session.set_available_commands(current_session, {})
                 session.set_config_options(current_session, result.configOptions or {})
+                apply_adapter_config_option_overrides(current_session)
                 drain_session_updates(current_session, previous_transport_remote_id)
                 return
             end
@@ -668,8 +739,8 @@ local function establish_session(current_session, opts)
 
     state.active_session = current_session
     state.creating_new_session = true
-    local params, cwd = session_request_params()
-    local result, rpc_error = ensure_client():request_sync(methods.SESSION_NEW, params)
+    local params, cwd = session_request_params(current_session)
+    local result, rpc_error = ensure_client(current_session):request_sync(methods.SESSION_NEW, params)
     state.creating_new_session = false
 
     if rpc_error ~= nil then
@@ -701,6 +772,7 @@ local function establish_session(current_session, opts)
     session.set_remote_id(current_session, result.sessionId, 'created')
     session.set_cwd(current_session, cwd)
     session.set_config_options(current_session, result.configOptions or {})
+    apply_adapter_config_option_overrides(current_session)
     session.set_available_commands(current_session, {})
     drain_session_updates(current_session, result.sessionId)
 end
@@ -730,12 +802,16 @@ end
 ---@param current_session acp.Session
 ---@param prompt string
 function M.prompt(current_session, prompt)
+    if current_session.remote_id ~= nil and current_session.turn_id > 1 then
+        reset_connection()
+    end
+
     M.ensure(current_session)
     state.active_session = current_session
     local generation = client_generation
     local turn_id = session.current_turn_id(current_session)
 
-    ensure_client():request(methods.SESSION_PROMPT, {
+    ensure_client(current_session):request(methods.SESSION_PROMPT, {
         sessionId = current_session.remote_id,
         prompt = prompt_content(current_session, prompt),
     }, function(result, rpc_error)
@@ -777,7 +853,7 @@ function M.set_config_option(current_session, config_id, value)
         error(string.format('ACP session is not bound: %s', current_session.id))
     end
 
-    local result, rpc_error = ensure_client():request_sync(methods.SESSION_SET_CONFIG_OPTION, {
+    local result, rpc_error = ensure_client(current_session):request_sync(methods.SESSION_SET_CONFIG_OPTION, {
         sessionId = current_session.remote_id,
         configId = config_id,
         value = value,
@@ -807,7 +883,7 @@ function M.cancel(current_session)
     end
 
     cancel_pending_permission(current_session)
-    ensure_client():notify(methods.SESSION_CANCEL, {
+    ensure_client(current_session):notify(methods.SESSION_CANCEL, {
         sessionId = current_session.remote_id,
     })
 end

@@ -32,7 +32,6 @@ local function slash_command_names()
     return names
 end
 
-
 ---@return acp.AvailableCommand[]
 local function slash_commands()
     local ok, commands = pcall(function()
@@ -142,6 +141,19 @@ local function config_option_ids(session_id)
     end
 
     return ids
+end
+
+---@return string[]
+local function adapter_names()
+    local ok, names = pcall(function()
+        return api().adapter_names()
+    end)
+
+    if not ok then
+        return {}
+    end
+
+    return names
 end
 
 ---@param cmdline string
@@ -400,6 +412,35 @@ function M.ensure()
         api().pick_session()
     end, {
         desc = 'Select a local ACP session through the UI picker',
+    })
+
+    create('ACPAdapters', function()
+        local lines = api().adapter_lines()
+
+        if #lines == 0 then
+            vim.notify('No ACP adapters are configured')
+            return
+        end
+
+        vim.notify(table.concat(lines, '\n'))
+    end, {
+        desc = 'List configured ACP adapters',
+    })
+
+    create('ACPSelectAdapter', function(opts)
+        api().select_adapter(vim.trim(opts.args))
+    end, {
+        desc = 'Select the ACP adapter for the current session',
+        nargs = 1,
+        complete = function()
+            return adapter_names()
+        end,
+    })
+
+    create('ACPPickAdapter', function()
+        api().pick_adapter()
+    end, {
+        desc = 'Select the ACP adapter for the current session through the UI picker',
     })
 
     create('ACPSetConfigOption', function(opts)

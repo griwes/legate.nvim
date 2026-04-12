@@ -1,5 +1,6 @@
 ---@class acp.SessionModule
 local M = {}
+local config = require('acp.config')
 local status_message = require('acp.status_message')
 
 ---@type table<string, acp.Session>
@@ -9,6 +10,20 @@ local next_ordinal = 1
 local next_message_id = 1
 local next_pending_approval_ordinal = 1
 local reconcile_status_messages
+
+---@param adapter_name? string
+---@return string
+local function resolved_adapter_name(adapter_name)
+    if type(adapter_name) == 'string' and adapter_name ~= '' then
+        local ok = pcall(config.adapter, adapter_name)
+
+        if ok then
+            return adapter_name
+        end
+    end
+
+    return config.default_adapter_name()
+end
 
 ---@return integer
 local function now()
@@ -37,6 +52,7 @@ local function make_session()
     return {
         id = string.format('acp:%d', ordinal),
         ordinal = ordinal,
+        adapter_name = resolved_adapter_name(nil),
         status = 'idle',
         messages = {},
         draft_prompt = '',
@@ -67,6 +83,95 @@ local function find_tool_call(current_session, tool_call_id)
     end
 
     return nil, nil
+end
+
+---@param tool_call acp.ToolCallState
+---@return table<string, acp.MetaTerminalStream>
+local function terminal_streams(tool_call)
+    if type(tool_call.terminal_streams) ~= 'table' then
+        tool_call.terminal_streams = {}
+    end
+
+    return tool_call.terminal_streams
+end
+
+---@param tool_call acp.ToolCallState
+---@param terminal_id string
+---@return acp.MetaTerminalStream
+local function ensure_terminal_stream(tool_call, terminal_id)
+    local streams = terminal_streams(tool_call)
+    local stream = streams[terminal_id]
+
+    if stream == nil then
+        stream = {
+            terminal_id = terminal_id,
+            output = '',
+        }
+        streams[terminal_id] = stream
+    end
+
+    local has_terminal_content = false
+
+    for _, content in ipairs(tool_call.content or {}) do
+        if content.type == 'terminal' and content.terminalId == terminal_id then
+            has_terminal_content = true
+            break
+        end
+    end
+
+    if not has_terminal_content then
+        table.insert(tool_call.content, {
+            type = 'terminal',
+            terminalId = terminal_id,
+        })
+    end
+
+    return stream
+end
+
+---@param tool_call acp.ToolCallState
+---@param meta table?
+local function apply_tool_call_meta(tool_call, meta)
+    if type(meta) ~= 'table' then
+        return
+    end
+
+    local terminal_info = type(meta.terminal_info) == 'table' and meta.terminal_info or nil
+    if terminal_info ~= nil and type(terminal_info.terminal_id) == 'string' and terminal_info.terminal_id ~= '' then
+        local stream = ensure_terminal_stream(tool_call, terminal_info.terminal_id)
+
+        if type(terminal_info.cwd) == 'string' and terminal_info.cwd ~= '' then
+            stream.cwd = terminal_info.cwd
+        end
+    end
+
+    local terminal_output = type(meta.terminal_output) == 'table' and meta.terminal_output or nil
+    if
+        terminal_output ~= nil
+        and type(terminal_output.terminal_id) == 'string'
+        and terminal_output.terminal_id ~= ''
+    then
+        local stream = terminal_streams(tool_call)[terminal_output.terminal_id]
+
+        if stream ~= nil and type(terminal_output.data) == 'string' then
+            stream.output = stream.output .. terminal_output.data
+        end
+    end
+
+    local terminal_exit = type(meta.terminal_exit) == 'table' and meta.terminal_exit or nil
+    if terminal_exit ~= nil and type(terminal_exit.terminal_id) == 'string' and terminal_exit.terminal_id ~= '' then
+        local stream = terminal_streams(tool_call)[terminal_exit.terminal_id]
+
+        if stream ~= nil then
+            stream.exit_code = tonumber(terminal_exit.exit_code)
+
+            if terminal_exit.signal == vim.NIL then
+                stream.signal = nil
+            elseif type(terminal_exit.signal) == 'string' then
+                stream.signal = terminal_exit.signal
+            end
+        end
+    end
 end
 
 ---@param status acp.ToolCallStatus
@@ -294,6 +399,7 @@ local function restore_session(item)
 
     restored.id = session_id
     restored.ordinal = tonumber(restored.ordinal) or 1
+    restored.adapter_name = resolved_adapter_name(restored.adapter_name)
     restored.status = normalize_status(restored.status)
     restored.messages = type(restored.messages) == 'table' and restored.messages or {}
     restored.draft_prompt = type(restored.draft_prompt) == 'string' and restored.draft_prompt or ''
@@ -342,21 +448,25 @@ local function store(session)
 end
 
 ---Create and select a new ACP session.
+---@param adapter_name? string
 ---@return acp.Session
-function M.create()
-    return store(make_session())
+function M.create(adapter_name)
+    local current_session = make_session()
+    current_session.adapter_name = resolved_adapter_name(adapter_name)
+    return store(current_session)
 end
 
 ---Ensure there is a current ACP session.
+---@param adapter_name? string
 ---@return acp.Session
-function M.ensure()
+function M.ensure(adapter_name)
     local session = M.current()
 
     if session ~= nil then
         return session
     end
 
-    return M.create()
+    return M.create(adapter_name)
 end
 
 ---Return the current ACP session.
@@ -374,6 +484,32 @@ end
 ---@return acp.Session?
 function M.get(session_id)
     return sessions[session_id]
+end
+
+---Set the configured adapter for a local ACP session.
+---@param current_session acp.Session
+---@param adapter_name string
+---@return acp.Session
+function M.set_adapter(current_session, adapter_name)
+    current_session.adapter_name = adapter_name
+    current_session.updated_at = now()
+    return current_session
+end
+
+---Clear adapter-owned remote/session metadata before rebinding under a new adapter.
+---@param current_session acp.Session
+---@return acp.Session
+function M.reset_adapter_runtime_state(current_session)
+    current_session.agent_info = nil
+    current_session.remote_id = nil
+    current_session.transport_remote_id = nil
+    current_session.remote_sync_state = 'unbound'
+    current_session.remote_sync_error = nil
+    current_session.config_options = {}
+    current_session.available_commands = {}
+    current_session.cwd = nil
+    current_session.updated_at = now()
+    return current_session
 end
 
 ---Select an existing ACP session as current.
@@ -738,6 +874,8 @@ function M.add_tool_call(current_session, tool_call)
         raw_output = vim.deepcopy(tool_call.rawOutput),
     }
 
+    apply_tool_call_meta(next_tool_call, tool_call._meta)
+
     table.insert(current_session.tool_calls, next_tool_call)
     current_session.updated_at = now()
     upsert_status_message(
@@ -799,6 +937,8 @@ function M.update_tool_call(current_session, tool_call_update)
     if tool_call_update.rawOutput ~= nil then
         tool_call.raw_output = vim.deepcopy(tool_call_update.rawOutput)
     end
+
+    apply_tool_call_meta(tool_call, tool_call_update._meta)
 
     current_session.updated_at = now()
     upsert_status_message(

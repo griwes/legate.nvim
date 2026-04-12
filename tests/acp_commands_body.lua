@@ -16,6 +16,9 @@ it('registers ACP user commands', function()
         'ACPPickApproval',
         'ACPSelectSession',
         'ACPPickSession',
+        'ACPAdapters',
+        'ACPSelectAdapter',
+        'ACPPickAdapter',
         'ACPSetConfigOption',
         'ACPPickConfigOption',
         'ACPRunSlashCommand',
@@ -52,8 +55,105 @@ it('lists local ACP sessions through the command surface', function()
 
     assert.is_true(ok, err)
     assert.are.same({
-        '  acp:1  [idle]  remote=unbound  sync=unbound  messages=0\n* acp:2  [idle]  remote=unbound  sync=unbound  messages=0',
+        '  acp:1  adapter=codex  [idle]  remote=unbound  sync=unbound  messages=0\n* acp:2  adapter=codex  [idle]  remote=unbound  sync=unbound  messages=0',
     }, notifications)
+end)
+
+it('lists configured ACP adapters through the command surface', function()
+    local notifications = {}
+    local original_notify = vim.notify
+
+    plugin.setup({
+        default_adapter = 'custom',
+        adapters = {
+            codex = {
+                command = { 'codex-acp' },
+            },
+            custom = {
+                command = { 'custom-acp' },
+                auth_method = 'chatgpt',
+                config_option_overrides = {
+                    mode = 'code',
+                },
+                title = 'Custom ACP',
+            },
+        },
+    })
+    api.open_chat()
+
+    vim.notify = function(message)
+        table.insert(notifications, message)
+    end
+
+    local ok, err = pcall(vim.cmd, 'ACPAdapters')
+
+    vim.notify = original_notify
+
+    assert.is_true(ok, err)
+    assert.are.equal(1, #notifications)
+    assert.matches('codex', notifications[1], 1, true)
+    assert.matches('custom', notifications[1], 1, true)
+    assert.matches('auth=chatgpt', notifications[1], 1, true)
+    assert.matches('command=custom%-acp', notifications[1])
+    assert.matches('overrides=1', notifications[1], 1, true)
+end)
+
+it('does not auto-create a session when listing ACP adapters', function()
+    local notifications = {}
+    local original_notify = vim.notify
+
+    plugin.setup({
+        default_adapter = 'custom',
+        adapters = {
+            codex = {
+                command = { 'codex-acp' },
+            },
+            custom = {
+                command = { 'custom-acp' },
+                title = 'Custom ACP',
+            },
+        },
+    })
+
+    vim.notify = function(message)
+        table.insert(notifications, message)
+    end
+
+    local ok, err = pcall(vim.cmd, 'ACPAdapters')
+
+    vim.notify = original_notify
+
+    assert.is_true(ok, err)
+    assert.are.equal(0, #api.list_sessions())
+    assert.are.equal(1, #notifications)
+    assert.matches('* custom', notifications[1], 1, true)
+end)
+
+it('selects an ACP adapter through the picker command surface', function()
+    plugin.setup({
+        default_adapter = 'codex',
+        adapters = {
+            codex = {
+                command = { 'codex-acp' },
+            },
+            custom = {
+                command = { 'custom-acp' },
+                title = 'Custom ACP',
+            },
+        },
+    })
+    api.open_chat()
+
+    local restore = with_ui_select(function(items, opts, on_choice)
+        assert.are.same({ 'codex', 'custom' }, items)
+        assert.are.equal('Select ACP adapter for acp:1', opts.prompt)
+        on_choice('custom')
+    end)
+
+    vim.cmd('ACPPickAdapter')
+    restore()
+
+    assert.are.equal('custom', api.current_session().adapter_name)
 end)
 
 it('saves, restores, and clears ACP session storage through the command surface', function()
@@ -154,7 +254,7 @@ it('does not auto-create a session for ACP approval completion or listing', func
     vim.notify = original_notify
 
     assert.is_true(ok, err)
-    assert.are.same({'No ACP approvals are available'}, notifications)
+    assert.are.same({ 'No ACP approvals are available' }, notifications)
     assert.are.equal(0, #api.list_sessions())
 end)
 
@@ -248,7 +348,6 @@ it('completes bare approval option ids for a single pending request without nume
         'reject-once',
     }, definition.complete('', 'ACPSelectApprovalOption ', 0))
 end)
-
 
 it('completes queued approval options for every pending request', function()
     plugin.setup({
@@ -543,12 +642,12 @@ it('lists ACP MCP servers with redacted env values through the command surface',
     assert.are.equal(1, #notifications)
     assert.is_true(notifications[1]:match('ACP MCP servers:') ~= nil)
     assert.is_true(notifications[1]:match('%- stdio%-map') ~= nil)
-    assert.is_true(notifications[1]:match("command = \"node\"") ~= nil)
-    assert.is_true(notifications[1]:match("server%.js") ~= nil)
-    assert.is_true(notifications[1]:match("name = \"API_KEY\"") ~= nil)
-    assert.is_true(notifications[1]:match("name = \"TOKEN\"") ~= nil)
-    assert.is_true(notifications[1]:match("name = \"PASSWORD\"") ~= nil)
-    assert.is_true(notifications[1]:match("value = \"<redacted>\"") ~= nil)
+    assert.is_true(notifications[1]:match('command = "node"') ~= nil)
+    assert.is_true(notifications[1]:match('server%.js') ~= nil)
+    assert.is_true(notifications[1]:match('name = "API_KEY"') ~= nil)
+    assert.is_true(notifications[1]:match('name = "TOKEN"') ~= nil)
+    assert.is_true(notifications[1]:match('name = "PASSWORD"') ~= nil)
+    assert.is_true(notifications[1]:match('value = "<redacted>"') ~= nil)
     assert.is_nil(notifications[1]:match('secret'))
     assert.is_nil(notifications[1]:match('top%-secret'))
     assert.is_nil(notifications[1]:match('classified'))

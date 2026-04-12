@@ -6,13 +6,29 @@ local injected_server_cache = nil
 local injected_server_cache_key = nil
 
 local function injected_server_name()
-    return 'acp.nvim'
+    return 'neovim'
 end
 
 M.injected_server_name = injected_server_name
 
+---@param current_session_or_opts? acp.Session|{ passive?: boolean }
+---@param opts? { passive?: boolean }
+---@return acp.Session?, { passive?: boolean }
+local function normalize_args(current_session_or_opts, opts)
+    if
+        opts == nil
+        and type(current_session_or_opts) == 'table'
+        and current_session_or_opts.id == nil
+        and current_session_or_opts.adapter_name == nil
+    then
+        return nil, current_session_or_opts
+    end
+
+    return current_session_or_opts, opts or {}
+end
+
 local function is_acp_managed_server(server)
-    return type(server) == 'table' and (server.name == injected_server_name() or server.name == 'neovim')
+    return type(server) == 'table' and server.name == injected_server_name()
 end
 
 local function transport_descriptor(mcp, opts)
@@ -142,12 +158,16 @@ local function injected_server_descriptor(opts)
     return vim.deepcopy(injected_server_cache)
 end
 
+---@param current_session_or_opts? acp.Session|{ passive?: boolean }
+---@param opts? { passive?: boolean }
 ---@return table[]
-function M.effective_servers(opts)
-    opts = opts or {}
-    local servers = vim.deepcopy(config.get().mcp_servers or {})
+function M.effective_servers(current_session_or_opts, opts)
+    local current_session
+    current_session, opts = normalize_args(current_session_or_opts, opts)
+    local adapter = config.adapter_for_session(current_session)
+    local servers = vim.deepcopy(adapter.mcp_servers or {})
 
-    if not config.get().enable_mcp_nvim then
+    if not adapter.enable_mcp_nvim then
         return servers
     end
 
@@ -180,9 +200,11 @@ function M.effective_servers(opts)
     return servers
 end
 
+---@param current_session? acp.Session
 ---@return table[]
-function M.static_servers()
-    return vim.deepcopy(config.get().mcp_servers or {})
+function M.static_servers(current_session)
+    local adapter = config.adapter_for_session(current_session)
+    return vim.deepcopy(adapter.mcp_servers or {})
 end
 
 return M

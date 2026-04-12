@@ -4,7 +4,7 @@ Neovim-native ACP client focused on a single chat buffer and explicit terminal/s
 
 ## Status
 
-Core protocol slice in progress. The repo now has a typed setup surface, a single reusable Markdown chat buffer, a real ACP stdio JSON-RPC boundary, local session persistence, in-memory session records bound to remote ACP session IDs, prompt submission through `session/prompt`, streamed `session/update` handling, session config-option UX, slash-command UX, and both native and `terminal-manager.nvim` terminal backends.
+Core protocol slice in progress. The repo now has a typed setup surface, named ACP adapters with session-aware adapter selection, config-driven ACP option overrides, a single reusable Markdown chat buffer, a real ACP stdio JSON-RPC boundary, local session persistence, prompt submission through `session/prompt`, streamed `session/update` handling, session config-option UX, slash-command UX, metadata-driven terminal-stream rendering for the verified `zed-industries/codex-acp` `_meta` shape, and both native and `terminal-manager.nvim` terminal backends.
 
 ## Installation
 
@@ -14,7 +14,18 @@ Example local `lazy.nvim` spec:
 {
     dir = vim.fn.expand("~/projects/neovim-plugin-orchestration/acp.nvim"),
     name = 'acp.nvim',
-    opts = {},
+    opts = {
+        default_adapter = 'codex',
+        adapters = {
+            codex = {
+                command = { 'codex-acp' },
+                auth_method = 'chatgpt',
+                config_option_overrides = {
+                    mode = 'code',
+                },
+            },
+        },
+    },
 }
 ```
 
@@ -36,6 +47,9 @@ Example local `lazy.nvim` spec:
 - `:ACPPickApproval` reveals a recorded approval through `vim.ui.select`
 - `:ACPSelectSession <id>` switches the shared chat buffer to a local ACP session
 - `:ACPPickSession` switches the shared chat buffer through `vim.ui.select`
+- `:ACPAdapters` lists configured ACP adapters for the current local session
+- `:ACPSelectAdapter <name>` switches the current local session to a configured ACP adapter and drops stale remote binding state
+- `:ACPPickAdapter` switches the current local session to a configured ACP adapter through `vim.ui.select`
 - `:ACPSetConfigOption <config-id> <value>` changes an ACP session config option through `session/set_config_option`
 - `:ACPPickConfigOption` changes an ACP session config option through `vim.ui.select`
 - `:ACPRunSlashCommand <name> [input...]` submits an ACP slash command through the normal prompt path
@@ -51,6 +65,8 @@ Example local `lazy.nvim` spec:
 - transcript and editable prompt live in the same buffer
 - the chat buffer is real `markdown` content and is intended to stay compatible with `render-markdown.nvim`
 - multiple local ACP sessions can coexist, with API support to list/select them and preserve a separate unsent draft per session
+- each local ACP session now also records which configured ACP adapter it uses
+- adapter selection is session-aware: changing adapters clears stale remote binding state for that session instead of pretending remote ids are reusable across adapters
 - local ACP sessions can now be saved to disk, restored later, and optionally restored during `setup()`
 - persisted ACP state is local-session state only; remote ACP continuity still goes through explicit binding or reload via `:ACPLoadSession`
 - sessions that were still waiting on a live turn persist and restore as cancelled local sessions, with any pending prompt moved back into the editable draft
@@ -60,6 +76,8 @@ Example local `lazy.nvim` spec:
 - ACP transport is grounded in the official protocol over newline-delimited stdio JSON-RPC
 - the current slice handles `initialize`, optional `authenticate`, `session/new`, `session/prompt`, `session/update`, and `session/cancel`
 - ACP now renders session config options inline in the Markdown chat buffer and supports changing them through commands, pickers, and official `session/set_config_option` requests
+- ACP now renders the active adapter and its config-driven ACP option overrides inline in the Markdown chat buffer
+- adapter config can now preselect transport/auth/runtime settings and apply ACP `session/set_config_option` overrides automatically after bind/load
 - ACP now stores slash commands from official `available_commands_update` notifications, renders them inline in the Markdown chat buffer, and exposes list/run/picker UX that submits normal `/command ...` prompt text
 - ACP now defers chat-buffer rerenders out of fast event contexts so live transport notifications do not hit `E5560` under real agent traffic
 - tool calls now render in a dedicated Markdown tools section instead of collapsing into transcript status noise
@@ -68,10 +86,12 @@ Example local `lazy.nvim` spec:
 - ACP now advertises `fs/read_text_file` and `fs/write_text_file`, reads from unsaved open buffers when possible, and writes through open buffers so Neovim state and disk stay aligned
 - ACP now advertises `terminal = true` and handles `terminal/create`, `terminal/output`, `terminal/wait_for_exit`, `terminal/kill`, and `terminal/release` through either a native hidden-process backend or an optional `terminal-manager.nvim` adapter
 - the native backend remains the default, and the `terminal-manager.nvim` backend keeps ACP `terminal/release` scoped to ACP handle invalidation instead of deleting the terminal-manager terminal object
+- ACP now also renders bounded inline terminal previews and hover details for the verified `zed-industries/codex-acp` `_meta.terminal_info` / `_meta.terminal_output` / `_meta.terminal_exit` compatibility path without weakening official ACP `terminal/*`
 - ACP can now auto-inject the live `mcp.nvim` endpoint into its configured `mcp_servers` list when `enable_mcp_nvim = true` (opt-in)
 - this gives ACP/Codex a stable local MCP surface for buffer-id/file-path-based edits and terminal lifecycle routing, while still leaving ACP-native terminal methods available when the agent actually uses them
 - ACP can now also prepend `neovim` MCP routing guidance into submitted prompts when `mcp_nvim_guidance = true` (default)
 - that guidance tells the agent to prefer the identifier-based `neovim/editor/...` tools and to use `neovim/terminal/...` tools only when ACP-native terminal methods are not actually being used
+- ACP does not invent a separate terminal proxy server for this fallback; the only intended MCP fallback is the existing `mcp.nvim` `neovim/terminal/*` surface
 - follow-up turns rebind the transport channel between prompts to fail closed on stale cross-turn updates
 - when the agent advertises `loadSession`, follow-up turns resume the existing remote ACP session with `session/load`
 - when the agent does not advertise `loadSession`, follow-up turns fall back to a fresh remote session plus explicit transcript replay in the prompt content
@@ -105,6 +125,56 @@ require('acp').setup({
 ```
 
 When using `terminal_manager`, `acp.nvim` expects `terminal-manager.nvim` to be installed and on the runtimepath.
+
+## Adapters
+
+Adapters are explicit named transport profiles. `default_adapter` picks which one
+new local ACP sessions inherit, and each session can later switch adapters
+through `:ACPSelectAdapter` or `:ACPPickAdapter`.
+
+Example:
+
+```lua
+require('acp').setup({
+    default_adapter = 'codex',
+    adapters = {
+        codex = {
+            command = { 'codex-acp' },
+            auth_method = 'chatgpt',
+            enable_mcp_nvim = true,
+            mcp_nvim_guidance = true,
+            config_option_overrides = {
+                mode = 'code',
+                model = 'gpt-5.4',
+            },
+        },
+        cautious = {
+            command = { 'codex-acp' },
+            auth_method = 'chatgpt',
+            config_option_overrides = {
+                mode = 'ask',
+                model = 'gpt-5.4-mini',
+            },
+            title = 'Codex Cautious',
+        },
+    },
+})
+```
+
+Each adapter can override:
+
+- `command`
+- `env`
+- `auth_method`
+- `cwd`
+- `protocol_version`
+- `client_info`
+- `client_capabilities`
+- `mcp_servers`
+- `enable_mcp_nvim`
+- `mcp_nvim_guidance`
+- `request_timeout_ms`
+- `config_option_overrides`
 
 ## Approval Strategy
 
@@ -156,4 +226,10 @@ Restored state is intentionally local only: transcript, draft, tool rows, approv
 - CI lives in `.github/workflows/ci.yml`
 
 The live restore and load-failed recovery smokes use real `codex-acp` with `auth_method = 'chatgpt'`, so they expect working local Codex auth before you run them.
-The live terminal-selection probe also uses real `codex-acp` with `auth_method = 'chatgpt'`; it fails if no terminal or ACP tool-call path is observed, reports whether the agent actually used ACP `terminal/*`, which ACP tool-call kinds were observed instead, and whether any observed tool calls were `execute`, and accepts `ACP_LIVE_TERMINAL_BACKEND=native|terminal_manager` for backend comparison.
+The live terminal-selection probe also uses real `codex-acp` with `auth_method = 'chatgpt'`; it enables `mcp.nvim` injection and guidance during the run, fails if no terminal or ACP tool-call path is observed, reports whether the agent actually used ACP `terminal/*`, whether it used `neovim/terminal/*`, which ACP tool-call kinds were observed instead, and whether any observed tool calls were `execute`, and accepts:
+
+- `ACP_LIVE_TERMINAL_BACKEND=native|terminal_manager`
+- `ACP_LIVE_PROBE_MODE=balanced|strict_acp_first|strict_mcp_terminal|hard_mcp_terminal_only|split_mcp_routing`
+
+for backend and guidance-strength comparison. The latest real `native` probes against installed `zed-industries/codex-acp` do reach the injected MCP server now: they issue `tools/list`, attempt `neovim/terminal/create`, and report why they rejected fallback. The remaining blocker is that current `codex-acp` MCP calls still arrive as `server = "neovim"` plus `tool = "neovim/terminal/create"`, and those calls are then cancelled before execution.
+ACP now auto-approves the injected `neovim/terminal/*` permission path in default mode, so the strict live probe reaches full MCP execution: `tools/list`, `tools/call` for `create|wait|output|release`, and a successful `ACP_TERMINAL_SELECTION_PROBE_OK` response without any generic execute fallback.

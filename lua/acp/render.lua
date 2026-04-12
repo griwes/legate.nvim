@@ -48,6 +48,39 @@ local function format_plan(entries)
 end
 
 ---@param current_session acp.Session
+---@return string[]
+local function format_adapter(current_session)
+    local adapter = config.adapter_for_session(current_session)
+    local lines = {
+        '## Adapter',
+        string.format(
+            '- Current: `%s` (%s)',
+            current_session.adapter_name,
+            adapter.title or current_session.adapter_name
+        ),
+        string.format('- Command: `%s`', table.concat(adapter.command, ' ')),
+        string.format('- Auth: `%s`', adapter.auth_method or 'auto'),
+    }
+
+    local override_ids = vim.tbl_keys(adapter.config_option_overrides or {})
+    table.sort(override_ids)
+
+    if #override_ids == 0 then
+        table.insert(lines, '- Config option overrides: _None._')
+    else
+        table.insert(lines, '- Config option overrides:')
+
+        for _, config_id in ipairs(override_ids) do
+            table.insert(lines, string.format('  - `%s = %s`', config_id, adapter.config_option_overrides[config_id]))
+        end
+    end
+
+    table.insert(lines, '')
+
+    return lines
+end
+
+---@param current_session acp.Session
 ---@param message acp.Message
 ---@return string[]
 local function format_message(current_session, message)
@@ -130,14 +163,11 @@ local function build_layout(current_session, prompt)
     local lines = layout.lines
 
     local normalized_error = current_session.remote_sync_error ~= nil
-        and normalize_remote_sync_error(current_session.remote_sync_error)
+            and normalize_remote_sync_error(current_session.remote_sync_error)
         or nil
 
     if normalized_error ~= nil then
-        table.insert(
-            lines,
-            string.format('> Remote Sync Error: `%s`', normalized_error)
-        )
+        table.insert(lines, string.format('> Remote Sync Error: `%s`', normalized_error))
     end
 
     if current_session.remote_sync_state == 'load_failed' then
@@ -155,6 +185,10 @@ local function build_layout(current_session, prompt)
         for _, line in ipairs(format_plan(current_session.plan_entries)) do
             table.insert(lines, line)
         end
+    end
+
+    for _, line in ipairs(format_adapter(current_session)) do
+        table.insert(lines, line)
     end
 
     table.insert(lines, config.get().transcript_header)

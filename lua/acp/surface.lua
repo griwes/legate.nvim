@@ -114,6 +114,7 @@ function M.winbar(session)
     local parts = {
         'ACP',
         session.id,
+        string.format('adapter=%s', session.adapter_name),
         session.status,
         string.format('sync=%s', session.remote_sync_state),
     }
