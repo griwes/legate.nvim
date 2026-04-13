@@ -16,6 +16,17 @@ local function find_permission_option(option_kind, options)
     return nil
 end
 
+---@param option_id string
+---@param options acp.PermissionOption[]
+---@return acp.PermissionOption?
+local function find_permission_option_by_id(option_id, options)
+    for _, option in ipairs(options) do
+        if option.optionId == option_id then
+            return option
+        end
+    end
+end
+
 ---@param value any
 ---@return string?
 local function non_empty_string(value)
@@ -95,6 +106,67 @@ local function default_permission_outcome(ctx, current_session, permission)
         outcome = 'selected',
         optionId = selected.optionId,
     }
+end
+
+---@param ctx acp.TransportContext
+---@param current_session acp.Session
+---@param permission acp.PermissionRequest
+---@return acp.PermissionOutcome?
+local function policy_permission_outcome(ctx, current_session, permission)
+    local callback = ctx.config.get().permission_policy
+
+    if type(callback) ~= 'function' then
+        return nil
+    end
+
+    local cfg = require('acp.config')
+    local adapter = cfg.adapter_for_session(current_session)
+    adapter.name = cfg.session_adapter_name(current_session)
+    local matched_tool_call = ctx.session.tool_call_by_id(current_session, permission.toolCall.toolCallId)
+    local ok, result = pcall(callback, current_session, permission, adapter, matched_tool_call)
+
+    if not ok or result == nil then
+        return nil
+    end
+
+    if type(result) == 'string' then
+        local option = find_permission_option_by_id(result, permission.options)
+            or find_permission_option(result, permission.options)
+
+        if option ~= nil then
+            return {
+                outcome = 'selected',
+                optionId = option.optionId,
+            }
+        end
+
+        return nil
+    end
+
+    if type(result) ~= 'table' then
+        return nil
+    end
+
+    local option = type(result.optionId) == 'string'
+            and find_permission_option_by_id(result.optionId, permission.options)
+        or nil
+
+    if option == nil and type(result.selected) == 'string' then
+        option = find_permission_option_by_id(result.selected, permission.options)
+    end
+
+    if option == nil and type(result.kind) == 'string' then
+        option = find_permission_option(result.kind, permission.options)
+    end
+
+    if option ~= nil then
+        return {
+            outcome = 'selected',
+            optionId = option.optionId,
+        }
+    end
+
+    return nil
 end
 
 ---@param permission acp.PermissionRequest
@@ -198,6 +270,17 @@ function M.handle_request(ctx, generation, permission, respond)
 
     if current_session == nil then
         respond(ctx.cancelled_response())
+        return
+    end
+
+    local policy_outcome = policy_permission_outcome(ctx, current_session, permission)
+
+    if policy_outcome ~= nil then
+        ctx.session.record_approval(current_session, permission, policy_outcome, 'policy')
+        ctx.rerender(current_session)
+        respond({
+            outcome = policy_outcome,
+        })
         return
     end
 

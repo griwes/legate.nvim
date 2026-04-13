@@ -2,6 +2,7 @@ local config = require('acp.config')
 
 local M = {}
 local missing_mcp_warned = false
+local missing_mcphub_warned = false
 local injected_server_cache = nil
 local injected_server_cache_key = nil
 
@@ -29,6 +30,51 @@ end
 
 local function is_acp_managed_server(server)
     return type(server) == 'table' and server.name == injected_server_name()
+end
+
+---@param adapter acp.AdapterConfig
+---@return table[]
+local function adapter_servers(adapter)
+    local servers = vim.deepcopy(adapter.mcp_servers or {})
+    return servers
+end
+
+---@param adapter acp.AdapterConfig
+---@return table[]
+local function mcphub_servers(adapter)
+    if not adapter.enable_mcphub then
+        return {}
+    end
+
+    local ok_mcphub, mcphub = pcall(require, 'mcphub')
+    local ok_proxy, proxy_module = pcall(require, 'mcphub.extensions.proxy')
+
+    if not ok_mcphub or not ok_proxy then
+        if not missing_mcphub_warned then
+            missing_mcphub_warned = true
+            vim.notify(
+                'ACP enable_mcphub is enabled, but MCPHub is not available on the runtimepath',
+                vim.log.levels.WARN
+            )
+        end
+        return {}
+    end
+
+    local instance = mcphub.get_hub_instance and mcphub.get_hub_instance() or nil
+
+    if instance == nil or (instance.is_ready ~= nil and not instance:is_ready()) then
+        return {}
+    end
+
+    local proxy = proxy_module.get and proxy_module.get() or nil
+
+    if type(proxy) ~= 'table' then
+        return {}
+    end
+
+    return {
+        vim.tbl_extend('force', { name = 'mcphub' }, vim.deepcopy(proxy)),
+    }
 end
 
 local function transport_descriptor(mcp, opts)
@@ -165,7 +211,9 @@ function M.effective_servers(current_session_or_opts, opts)
     local current_session
     current_session, opts = normalize_args(current_session_or_opts, opts)
     local adapter = config.adapter_for_session(current_session)
-    local servers = vim.deepcopy(adapter.mcp_servers or {})
+    local servers = adapter_servers(adapter)
+
+    vim.list_extend(servers, mcphub_servers(adapter))
 
     if not adapter.enable_mcp_nvim then
         return servers
@@ -204,7 +252,9 @@ end
 ---@return table[]
 function M.static_servers(current_session)
     local adapter = config.adapter_for_session(current_session)
-    return vim.deepcopy(adapter.mcp_servers or {})
+    local servers = adapter_servers(adapter)
+    vim.list_extend(servers, mcphub_servers(adapter))
+    return servers
 end
 
 return M

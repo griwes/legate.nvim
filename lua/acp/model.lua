@@ -127,6 +127,7 @@
 ---@field terminal? boolean
 
 ---@class acp.AdapterConfig
+---@field name? string
 ---@field command string[]
 ---@field env table<string, string>
 ---@field protocol_version integer
@@ -134,13 +135,18 @@
 ---@field client_capabilities acp.ClientCapabilities
 ---@field cwd string?
 ---@field mcp_servers table[]
+---@field enable_mcphub boolean
 ---@field enable_mcp_nvim boolean
 ---@field mcp_nvim_guidance boolean
 ---@field auth_method string?
 ---@field request_timeout_ms integer
 ---@field config_option_overrides table<string, string>
+---@field prompt_prelude? string
+---@field prompt_decorator? fun(prompt: string, adapter: acp.AdapterConfig, session?: acp.Session, agent_capabilities?: acp.AgentCapabilities): string?
 ---@field title? string
 ---@field description? string
+
+---@alias acp.PermissionPolicyResult string|{ optionId?: string, kind?: acp.PermissionOptionKind, outcome?: 'selected', selected?: string }
 
 ---@class acp.ReadTextFileRequest
 ---@field path string
@@ -399,6 +405,7 @@
 ---@field adapters table<string, acp.AdapterConfig>
 ---@field permission_strategy acp.PermissionStrategy
 ---@field permission_default acp.PermissionOptionKind
+---@field permission_policy? fun(current_session: acp.Session, permission: acp.PermissionRequest, adapter: acp.AdapterConfig, matched_tool_call?: acp.ToolCallState): acp.PermissionPolicyResult?
 
 ---@class acp.SessionPersistencePayload
 ---@field current_id string?

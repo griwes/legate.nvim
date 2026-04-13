@@ -1,11 +1,11 @@
 local buffer = require('acp.buffer')
 local config = require('acp.config')
 local config_option = require('acp.config_option')
+local prompt_pipeline = require('acp.prompt_pipeline')
 local context = require('acp.transport.context')
 local fs = require('acp.fs')
 local handlers = require('acp.handlers')
 local input = require('acp.input')
-local mcp_guidance = require('acp.mcp_guidance')
 local mcp_runtime = require('acp.mcp_runtime')
 local methods = require('acp.methods')
 local permission = require('acp.handlers.permission')
@@ -388,7 +388,7 @@ local function prompt_blocks(current_session, prompt)
             local text = message.text
 
             if message.role == 'user' then
-                text = mcp_guidance.prepend(text, state.agent_capabilities, current_session)
+                text = prompt_pipeline.decorate(text, state.agent_capabilities, current_session)
             end
 
             vim.list_extend(history, format_history_message(message.role, text))
@@ -421,7 +421,7 @@ end
 ---@param prompt string
 ---@return acp.ContentBlock[]
 local function prompt_content(current_session, prompt)
-    local guided_prompt = mcp_guidance.prepend(prompt, state.agent_capabilities, current_session)
+    local guided_prompt = prompt_pipeline.decorate(prompt, state.agent_capabilities, current_session)
 
     if state.loaded_existing_session then
         return {

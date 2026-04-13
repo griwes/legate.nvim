@@ -522,6 +522,87 @@ it('preserves effective MCP server introspection through the public API', functi
     package.loaded['mcp'] = original_mcp
 end)
 
+it('merges MCPHub proxy descriptors into static and effective server lists', function()
+    local runtime = require('acp.mcp_runtime')
+    local acp_api = require('acp.api')
+    local original_mcphub = package.loaded['mcphub']
+    local original_proxy = package.loaded['mcphub.extensions.proxy']
+
+    package.loaded['mcphub'] = {
+        get_hub_instance = function()
+            return {
+                is_ready = function()
+                    return true
+                end,
+            }
+        end,
+    }
+    package.loaded['mcphub.extensions.proxy'] = {
+        get = function()
+            return {
+                type = 'stdio',
+                command = 'mcphub-proxy',
+            }
+        end,
+    }
+
+    plugin.setup({
+        adapters = {
+            codex = {
+                command = { 'codex-acp' },
+                mcp_servers = {
+                    {
+                        name = 'static',
+                        type = 'stdio',
+                        command = 'static-proxy',
+                    },
+                },
+                enable_mcphub = true,
+            },
+        },
+    })
+
+    assert.are.same({
+        {
+            name = 'static',
+            type = 'stdio',
+            command = 'static-proxy',
+        },
+        {
+            name = 'mcphub',
+            type = 'stdio',
+            command = 'mcphub-proxy',
+        },
+    }, runtime.static_servers())
+    assert.are.same({
+        {
+            name = 'static',
+            type = 'stdio',
+            command = 'static-proxy',
+        },
+        {
+            name = 'mcphub',
+            type = 'stdio',
+            command = 'mcphub-proxy',
+        },
+    }, acp_api.mcp_servers())
+    assert.are.same({
+        {
+            name = 'static',
+            type = 'stdio',
+            command = 'static-proxy',
+        },
+        {
+            name = 'mcphub',
+            type = 'stdio',
+            command = 'mcphub-proxy',
+        },
+    }, runtime.effective_servers({ passive = true }))
+
+    package.loaded['mcphub'] = original_mcphub
+    package.loaded['mcphub.extensions.proxy'] = original_proxy
+end)
+
 it('refreshes the injected MCP server descriptor when the endpoint changes', function()
     local original_mcp = package.loaded['mcp']
     local started = 0
@@ -956,6 +1037,60 @@ it('auto-approves injected neovim terminal MCP permissions in default mode', fun
     assert.are.equal('default', approvals[1].source)
     assert.are.equal('Allow once', approvals[1].selected_option_name)
     assert.is_true(vim.tbl_contains(lines, '✓ Approval [1] Tool: neovim/neovim/terminal/create'))
+end)
+
+it('uses the configured permission policy hook before the default strategy', function()
+    local bufnr = api.open_chat()
+    local plugin = require('acp')
+
+    plugin.setup({
+        permission_policy = function(current_session, permission, adapter)
+            if current_session.id == api.current_session().id and adapter.name == 'codex' then
+                return 'allow_once'
+            end
+        end,
+    })
+
+    api.set_prompt('need permission')
+    api.submit_prompt()
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call',
+            toolCallId = 'call_policy_1',
+            title = 'Read config',
+            status = 'pending',
+            kind = 'read',
+        },
+    })
+
+    local response = fake_client:emit_request('session/request_permission', {
+        sessionId = 'sess_123',
+        toolCall = {
+            toolCallId = 'call_policy_1',
+        },
+        options = {
+            {
+                optionId = 'allow-once',
+                name = 'Allow once',
+                kind = 'allow_once',
+            },
+            {
+                optionId = 'reject-once',
+                name = 'Reject',
+                kind = 'reject_once',
+            },
+        },
+    })
+
+    local approvals = api.approvals()
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+    assert.are.equal('selected', response.result.outcome.outcome)
+    assert.are.equal('allow-once', response.result.outcome.optionId)
+    assert.are.equal('policy', approvals[1].source)
+    assert.are.equal('Allow once', approvals[1].selected_option_name)
+    assert.is_true(vim.tbl_contains(lines, '✓ Approval [1] Read config'))
 end)
 
 it('sanitizes multiline approval option names for rendering', function()

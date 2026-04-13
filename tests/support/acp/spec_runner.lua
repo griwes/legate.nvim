@@ -348,6 +348,7 @@ function M.run(description, body_path)
             package.loaded['acp.mcp_guidance'] = nil
             package.loaded['acp.mcp_runtime'] = nil
             package.loaded['acp.persistence'] = nil
+            package.loaded['acp.prompt_pipeline'] = nil
             package.loaded['acp.rpc'] = nil
             package.loaded['acp.render'] = nil
             package.loaded['acp.session'] = nil

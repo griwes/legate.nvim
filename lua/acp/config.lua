@@ -49,16 +49,20 @@ local defaults = {
             },
             cwd = nil,
             mcp_servers = {},
+            enable_mcphub = false,
             enable_mcp_nvim = false,
             mcp_nvim_guidance = true,
             auth_method = nil,
             request_timeout_ms = 20000,
             config_option_overrides = {},
+            prompt_prelude = nil,
+            prompt_decorator = nil,
             title = 'Codex ACP',
         },
     },
     permission_strategy = 'default',
     permission_default = 'reject_once',
+    permission_policy = nil,
 }
 
 ---@type acp.Config
@@ -113,6 +117,7 @@ local function normalize_adapter(name, adapter, base)
         or deepcopy(base.client_capabilities)
     normalized.cwd = type(normalized.cwd) == 'string' and normalized.cwd or nil
     normalized.mcp_servers = type(normalized.mcp_servers) == 'table' and deepcopy(normalized.mcp_servers) or {}
+    normalized.enable_mcphub = normalized.enable_mcphub == true
     normalized.enable_mcp_nvim = normalized.enable_mcp_nvim == true
     normalized.mcp_nvim_guidance = normalized.mcp_nvim_guidance ~= false
     normalized.auth_method = type(normalized.auth_method) == 'string' and normalized.auth_method or nil
@@ -120,6 +125,8 @@ local function normalize_adapter(name, adapter, base)
     normalized.config_option_overrides = type(normalized.config_option_overrides) == 'table'
             and deepcopy(normalized.config_option_overrides)
         or {}
+    normalized.prompt_prelude = type(normalized.prompt_prelude) == 'string' and normalized.prompt_prelude or nil
+    normalized.prompt_decorator = type(normalized.prompt_decorator) == 'function' and normalized.prompt_decorator or nil
     normalized.title = type(normalized.title) == 'string' and normalized.title or nil
     normalized.description = type(normalized.description) == 'string' and normalized.description or nil
 
@@ -151,10 +158,13 @@ local function base_adapter_defaults(merged)
         or base.client_capabilities
     base.cwd = type(merged.cwd) == 'string' and merged.cwd or nil
     base.mcp_servers = type(merged.mcp_servers) == 'table' and deepcopy(merged.mcp_servers) or {}
+    base.enable_mcphub = merged.enable_mcphub == true
     base.enable_mcp_nvim = merged.enable_mcp_nvim == true
     base.mcp_nvim_guidance = merged.mcp_nvim_guidance ~= false
     base.auth_method = type(merged.auth_method) == 'string' and merged.auth_method or nil
     base.request_timeout_ms = tonumber(merged.request_timeout_ms) or base.request_timeout_ms
+    base.prompt_prelude = type(merged.prompt_prelude) == 'string' and merged.prompt_prelude or nil
+    base.prompt_decorator = type(merged.prompt_decorator) == 'function' and merged.prompt_decorator or nil
     return base
 end
 
@@ -205,6 +215,9 @@ local function normalize(opts)
     if normalized.permission_default == nil then
         error('ACP permission_default must not be nil')
     end
+
+    normalized.permission_policy = type(normalized.permission_policy) == 'function' and normalized.permission_policy
+        or nil
 
     return normalized
 end

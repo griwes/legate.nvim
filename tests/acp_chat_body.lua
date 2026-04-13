@@ -1184,6 +1184,100 @@ it('does not reload slash commands for a remote-bound session whose cache is emp
     assert.are.same({}, api.slash_command_names())
 end)
 
+it('applies adapter prompt prelude and decorator on prompt submission', function()
+    local plugin = require('acp')
+
+    plugin.setup({
+        adapters = {
+            codex = {
+                command = { 'codex-acp' },
+                auth_method = 'chatgpt',
+                prompt_prelude = '<additional_instructions>\nPrefer MCP.\n</additional_instructions>',
+                prompt_decorator = function(prompt, adapter)
+                    assert.are.equal('codex', adapter.name)
+                    return prompt .. '\n\n[decorated]'
+                end,
+            },
+        },
+    })
+
+    api.open_chat()
+    api.set_prompt('hello world')
+    api.submit_prompt()
+
+    assert.are.equal('session/prompt', fake_client.async_calls[1].method)
+    assert.is_true(
+        fake_client.async_calls[1].params.prompt[1].text:find(
+            '<additional_instructions>\nPrefer MCP.\n</additional_instructions>',
+            1,
+            true
+        ) ~= nil
+    )
+    assert.is_true(fake_client.async_calls[1].params.prompt[1].text:match('%[decorated%]%s*$') ~= nil)
+end)
+
+it('applies the same prompt decoration pipeline to ACP slash commands', function()
+    local plugin = require('acp')
+
+    plugin.setup({
+        adapters = {
+            codex = {
+                command = { 'codex-acp' },
+                auth_method = 'chatgpt',
+                prompt_prelude = 'PROMPT PRELUDE',
+                prompt_decorator = function(prompt, adapter)
+                    assert.are.equal('codex', adapter.name)
+                    return prompt .. '\nDECORATED'
+                end,
+            },
+        },
+    })
+
+    api.open_chat()
+    api.slash_commands()
+    emit_available_commands_update()
+    api.run_slash_command('web', 'agent client protocol')
+
+    assert.are.equal('session/prompt', fake_client.async_calls[1].method)
+    assert.is_true(fake_client.async_calls[1].params.prompt[1].text:find('PROMPT PRELUDE', 1, true) ~= nil)
+    assert.is_true(fake_client.async_calls[1].params.prompt[1].text:find('/web agent client protocol', 1, true) ~= nil)
+    assert.is_true(fake_client.async_calls[1].params.prompt[1].text:match('DECORATED%s*$') ~= nil)
+end)
+
+it('replays prior user prompts through the same decoration pipeline on fresh-session fallback', function()
+    local plugin = require('acp')
+
+    plugin.setup({
+        adapters = {
+            codex = {
+                command = { 'codex-acp' },
+                auth_method = 'chatgpt',
+                prompt_prelude = 'PROMPT PRELUDE',
+                prompt_decorator = function(prompt, adapter)
+                    assert.are.equal('codex', adapter.name)
+                    return prompt .. '\nDECORATED'
+                end,
+            },
+        },
+    })
+
+    api.open_chat()
+    api.set_prompt('first turn')
+    api.submit_prompt()
+    fake_client:resolve({
+        stopReason = 'end_turn',
+    })
+
+    api.set_prompt('second turn')
+    api.submit_prompt()
+
+    local submitted = fake_client.async_calls[#fake_client.async_calls].params.prompt
+
+    assert.is_true(submitted[1].text:find('PROMPT PRELUDE', 1, true) ~= nil)
+    assert.is_true(submitted[1].text:find('first turn', 1, true) ~= nil)
+    assert.is_true(submitted[1].text:find('DECORATED', 1, true) ~= nil)
+end)
+
 it('does not submit an ACP slash command from the picker when required input is blank', function()
     local notifications = {}
     local original_notify = vim.notify

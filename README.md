@@ -78,16 +78,19 @@ Example local `lazy.nvim` spec:
 - ACP now renders session config options inline in the Markdown chat buffer and supports changing them through commands, pickers, and official `session/set_config_option` requests
 - ACP now renders the active adapter and its config-driven ACP option overrides inline in the Markdown chat buffer
 - adapter config can now preselect transport/auth/runtime settings and apply ACP `session/set_config_option` overrides automatically after bind/load
+- adapter config can now also prepend static prompt instructions and apply a last-mile prompt decorator on submission/replay without mutating locally stored user transcript text
 - ACP now stores slash commands from official `available_commands_update` notifications, renders them inline in the Markdown chat buffer, and exposes list/run/picker UX that submits normal `/command ...` prompt text
 - ACP now defers chat-buffer rerenders out of fast event contexts so live transport notifications do not hit `E5560` under real agent traffic
 - tool calls now render in a dedicated Markdown tools section instead of collapsing into transcript status noise
 - permission requests now support either configured default outcomes or an inline approval surface that stays visible in the shared chat buffer until it is explicitly resolved
+- ACP config can now also supply a first-class `permission_policy` callback so adapter- or request-specific approval decisions do not require monkeypatching ACP internals
 - approval history now records decision source plus per-option metadata, and approvals can be reviewed or revisited through commands/picker UX without leaving the shared Markdown chat buffer
 - ACP now advertises `fs/read_text_file` and `fs/write_text_file`, reads from unsaved open buffers when possible, and writes through open buffers so Neovim state and disk stay aligned
 - ACP now advertises `terminal = true` and handles `terminal/create`, `terminal/output`, `terminal/wait_for_exit`, `terminal/kill`, and `terminal/release` through either a native hidden-process backend or an optional `terminal-manager.nvim` adapter
 - the native backend remains the default, and the `terminal-manager.nvim` backend keeps ACP `terminal/release` scoped to ACP handle invalidation instead of deleting the terminal-manager terminal object
 - ACP now also renders bounded inline terminal previews and hover details for the verified `zed-industries/codex-acp` `_meta.terminal_info` / `_meta.terminal_output` / `_meta.terminal_exit` compatibility path without weakening official ACP `terminal/*`
 - ACP can now auto-inject the live `mcp.nvim` endpoint into its configured `mcp_servers` list when `enable_mcp_nvim = true` (opt-in)
+- ACP adapter config can now also add MCPHub proxy integration declaratively through `enable_mcphub = true`
 - this gives ACP/Codex a stable local MCP surface for buffer-id/file-path-based edits and terminal lifecycle routing, while still leaving ACP-native terminal methods available when the agent actually uses them
 - ACP can now also prepend `neovim` MCP routing guidance into submitted prompts when `mcp_nvim_guidance = true` (default)
 - that guidance tells the agent to prefer the identifier-based `neovim/editor/...` tools and to use `neovim/terminal/...` tools only when ACP-native terminal methods are not actually being used
@@ -171,10 +174,51 @@ Each adapter can override:
 - `client_info`
 - `client_capabilities`
 - `mcp_servers`
+- `enable_mcphub`
 - `enable_mcp_nvim`
 - `mcp_nvim_guidance`
 - `request_timeout_ms`
 - `config_option_overrides`
+- `prompt_prelude`
+- `prompt_decorator`
+
+Declarative MCPHub example:
+
+```lua
+require('acp').setup({
+    adapters = {
+        codex = {
+            command = { 'codex-acp' },
+            auth_method = 'chatgpt',
+            enable_mcphub = true,
+            enable_mcp_nvim = true,
+        },
+    },
+})
+```
+
+Example prompt steering:
+
+```lua
+require('acp').setup({
+    adapters = {
+        codex = {
+            command = { 'codex-acp' },
+            auth_method = 'chatgpt',
+            prompt_prelude = [[<additional_instructions>
+Prefer MCP tools in all cases.
+</additional_instructions>]],
+            prompt_decorator = function(prompt, adapter)
+                if adapter.name == 'codex' then
+                    return prompt .. '\n\n[workspace policy applied]'
+                end
+
+                return prompt
+            end,
+        },
+    },
+})
+```
 
 ## Approval Strategy
 
@@ -196,6 +240,26 @@ require('acp').setup({
 ```
 
 When an approval is pending, ACP keeps it visible above the prompt section until it is explicitly resolved or the underlying request becomes stale. Resolve it through the inline affordance or `:ACPSelectApprovalOption <request-id>:<option-id>`.
+
+Policy-driven approval example:
+
+```lua
+require('acp').setup({
+    permission_policy = function(current_session, permission, adapter, tool_call)
+        if adapter.command[1] == 'codex-acp' and tool_call and tool_call.kind == 'read' then
+            return 'allow_once'
+        end
+    end,
+})
+```
+
+The callback may return:
+
+- an option kind such as `'allow_once'`
+- an explicit ACP option id
+- a table with `optionId`, `selected`, or `kind`
+
+Returning `nil` falls back to the normal configured `permission_strategy`.
 
 ## Session Persistence
 
