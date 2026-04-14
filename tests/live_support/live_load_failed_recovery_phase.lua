@@ -1,4 +1,4 @@
-local plugin = require('acp')
+local plugin = require('legate')
 
 ---@param name string
 ---@return string
@@ -25,7 +25,7 @@ local function write_json(path, payload)
     }, path)
 end
 
----@param current_session acp.Session
+---@param current_session legate.Session
 ---@return string
 local function transcript_text(current_session)
     local chunks = {}
@@ -37,7 +37,7 @@ local function transcript_text(current_session)
     return table.concat(chunks, '\n')
 end
 
----@param current_session acp.Session
+---@param current_session legate.Session
 ---@return string?
 local function last_assistant_text(current_session)
     for index = #current_session.messages, 1, -1 do
@@ -51,7 +51,7 @@ local function last_assistant_text(current_session)
     return nil
 end
 
----@param current_session acp.Session
+---@param current_session legate.Session
 ---@param timeout_ms integer
 local function wait_for_turn_completion(current_session, timeout_ms)
     local completed = vim.wait(timeout_ms, function()
@@ -65,7 +65,7 @@ local function wait_for_turn_completion(current_session, timeout_ms)
     )
 end
 
----@param current_session acp.Session
+---@param current_session legate.Session
 ---@param token string
 local function assert_transcript_contains(current_session, token)
     local assistant_text = last_assistant_text(current_session) or ''
@@ -174,7 +174,7 @@ local ok, err = xpcall(function()
         assert(
             vim.tbl_contains(
                 first_lines,
-                '- Recovery: retry the recorded remote session with `:ACPLoadSession`, or create a fresh one with `:ACPRebindSession`'
+                '- Recovery: retry the recorded remote session with `:LegateLoadSession`, or create a fresh one with `:LegateRebindSession`'
             ),
             'load_failed recovery hint was not rendered after the first live load failure'
         )

@@ -15,18 +15,20 @@ function M.run(description, body_path)
         local fake_load_error
         local terminal_manager_modules = {
             'terminal_manager',
-            'terminal_manager.api',
-            'terminal_manager.commands',
-            'terminal_manager.config',
-            'terminal_manager.history',
-            'terminal_manager.init',
-            'terminal_manager.model',
-            'terminal_manager.persistence',
-            'terminal_manager.registry',
-            'terminal_manager.runtime.native',
-            'terminal_manager.view.float',
-            'terminal_manager.view.history',
-            'terminal_manager.view.split',
+            'terminalia.api',
+            'terminalia.commands',
+            'terminalia.config',
+            'terminalia.context.providers',
+            'terminalia.context.state',
+            'terminalia.history',
+            'terminalia.init',
+            'terminalia.persistence',
+            'terminalia.runtime.native',
+            'terminalia.terminal.model',
+            'terminalia.terminal.registry',
+            'terminalia.view.float',
+            'terminalia.view.history',
+            'terminalia.view.split',
         }
 
         local function temp_path(name)
@@ -53,7 +55,7 @@ function M.run(description, body_path)
         end
 
         ---@param session_id? string
-        ---@param available_commands? acp.AvailableCommand[]
+        ---@param available_commands? legate.AvailableCommand[]
         local function emit_available_commands_update(session_id, available_commands)
             fake_client:emit_notification('session/update', {
                 sessionId = session_id or 'sess_123',
@@ -64,7 +66,7 @@ function M.run(description, body_path)
             })
         end
 
-        ---@param sessions acp.Session[]
+        ---@param sessions legate.Session[]
         ---@return string[]
         local function session_ids(sessions)
             return vim.tbl_map(function(item)
@@ -72,7 +74,7 @@ function M.run(description, body_path)
             end, sessions)
         end
 
-        ---@param selector fun(items: acp.Session[], opts: table, on_choice: fun(selected_session?: acp.Session))
+        ---@param selector fun(items: legate.Session[], opts: table, on_choice: fun(selected_session?: legate.Session))
         local function with_ui_select(selector)
             local original = vim.ui.select
 
@@ -122,29 +124,30 @@ function M.run(description, body_path)
         local function setup_terminal_manager()
             local history_dir = vim.fn.tempname()
             local state_file = vim.fn.tempname()
-            local repo = vim.fn.fnamemodify(vim.fn.getcwd() .. '/../terminal-manager.nvim', ':p')
+            local repo = vim.fn.fnamemodify(vim.fn.getcwd() .. '/../terminalia.nvim', ':p')
 
             vim.opt.runtimepath:prepend(repo)
             clear_terminal_manager_modules()
 
-            local terminal_manager = require('terminal_manager')
+            local terminal_manager = require('terminalia')
+            local terminalia = terminal_manager
 
-            terminal_manager.setup({
+            terminalia.setup({
                 history_dir = history_dir,
                 notify_on_exit = false,
                 state_file = state_file,
             })
-            terminal_manager.api.clear()
+            terminalia.api.clear()
 
             return terminal_manager
         end
 
         local function clear_terminal_manager_state()
-            if package.loaded['terminal_manager'] == nil then
+            if package.loaded['terminalia'] == nil then
                 return
             end
 
-            require('terminal_manager').api.clear()
+            require('terminalia').api.clear()
         end
 
         local function install_fake_transport()
@@ -327,44 +330,17 @@ function M.run(description, body_path)
         end
 
         before_each(function()
-            package.loaded['acp'] = nil
-            package.loaded['acp.api'] = nil
-            package.loaded['acp.buffer'] = nil
-            package.loaded['acp.commands'] = nil
-            package.loaded['acp.config_option'] = nil
-            package.loaded['acp.config'] = nil
-            package.loaded['acp.hover'] = nil
-            package.loaded['acp.hover_lsp'] = nil
-            package.loaded['acp.input'] = nil
-            package.loaded['acp.edit'] = nil
-            package.loaded['acp.handlers'] = nil
-            package.loaded['acp.handlers.fs'] = nil
-            package.loaded['acp.handlers.init'] = nil
-            package.loaded['acp.handlers.permission'] = nil
-            package.loaded['acp.handlers.session_notification'] = nil
-            package.loaded['acp.handlers.terminal'] = nil
-            package.loaded['acp.model'] = nil
-            package.loaded['acp.methods'] = nil
-            package.loaded['acp.mcp_guidance'] = nil
-            package.loaded['acp.mcp_runtime'] = nil
-            package.loaded['acp.persistence'] = nil
-            package.loaded['acp.prompt_pipeline'] = nil
-            package.loaded['acp.rpc'] = nil
-            package.loaded['acp.render'] = nil
-            package.loaded['acp.session'] = nil
-            package.loaded['acp.status_message'] = nil
-            package.loaded['acp.surface'] = nil
-            package.loaded['acp.terminal'] = nil
-            package.loaded['acp.transport'] = nil
-            package.loaded['acp.transport.context'] = nil
-            package.loaded['acp.transport.init'] = nil
-            package.loaded['acp.transport.router'] = nil
+            for name, _ in pairs(package.loaded) do
+                if name == 'legate' or vim.startswith(name, 'legate.') then
+                    package.loaded[name] = nil
+                end
+            end
             clear_terminal_manager_modules()
             vim.g.loaded_acp = nil
 
-            plugin = require('acp')
+            plugin = require('legate')
             api = plugin.api
-            transport = require('acp.transport')
+            transport = require('legate.transport')
             fake_next_session = 123
             fake_available_commands = {
                 {

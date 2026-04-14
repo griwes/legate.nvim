@@ -10,8 +10,8 @@ This template is the common source for new plugin repositories in this workspace
 
 ## Placeholder Tokens
 
-- `acp.nvim`
-- `acp.nvim`
+- `legate.nvim`
+- `legate.nvim`
 - `acp`
 - `Neovim-native ACP client focused on a single chat buffer and explicit terminal/session seams.`
 
