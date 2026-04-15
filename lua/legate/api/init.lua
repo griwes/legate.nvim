@@ -1,9 +1,14 @@
+local approval_api = require('legate.api.approvals')
 local buffer = require('legate.ui.buffer')
-local config_option = require('legate.config.option')
+local configuration_api = require('legate.api.configuration')
+local formatters = require('legate.api.formatters')
+local pickers = require('legate.api.pickers')
+local prompt_api = require('legate.api.prompt')
+local session_api = require('legate.api.sessions')
+local slash_command_api = require('legate.api.slash_commands')
 local config = require('legate.config')
 local input = require('legate.ui.input')
 local mcp_runtime = require('legate.mcp.runtime')
-local picker = require('legate.ui.picker')
 local persistence = require('legate.core.persistence')
 local render = require('legate.ui.render')
 local continuity = require('legate.session')
@@ -12,220 +17,12 @@ local transport = require('legate.transport')
 
 ---@class legate.Api
 local M = {}
+local approval_helper
+local configuration_helper
 local store_draft
-
----@param name string
----@return string
-local function normalize_slash_command_name(name)
-    local trimmed = vim.trim(name)
-
-    if vim.startswith(trimmed, '/') then
-        return trimmed:sub(2)
-    end
-
-    return trimmed
-end
-
----@param option legate.SessionConfigOption
----@return string
-local function config_option_line(option)
-    return string.format('%s  (`%s`)  current=%s', option.name, option.id, option.currentValue)
-end
-
----@param choice legate.ConfigOptionValueChoice
----@param current_value string
----@return string
-local function config_option_value_line(choice, current_value)
-    local marker = choice.value.value == current_value and '*' or ' '
-    local label = string.format('%s %s  (`%s`)', marker, choice.value.name, choice.value.value)
-
-    if choice.group_name ~= nil then
-        return string.format('%s [%s]', label, choice.group_name)
-    end
-
-    return label
-end
-
----@param current_session legate.Session
----@return string
-local function session_line(current_session)
-    local selected_session = continuity.current()
-    local selected_id = selected_session and selected_session.id or nil
-    local marker = current_session.id == selected_id and '*' or ' '
-
-    return string.format(
-        '%s %s  adapter=%s  [%s]  remote=%s  sync=%s  messages=%d',
-        marker,
-        current_session.id,
-        config.session_adapter_name(current_session),
-        current_session.status,
-        current_session.remote_id or 'unbound',
-        current_session.remote_sync_state,
-        #current_session.messages
-    )
-end
-
----@param approval legate.ApprovalEntry
----@return string
-local function approval_line(approval)
-    local selected = approval.selected_option_name
-
-    if selected ~= nil and approval.selected_kind ~= nil then
-        selected = string.format('%s [%s]', selected, approval.selected_kind)
-    else
-        selected = approval.outcome
-    end
-
-    return string.format(
-        '[%d] %s  outcome=%s  via=%s  selected=%s',
-        approval.ordinal,
-        approval.title,
-        approval.outcome,
-        approval.source,
-        selected
-    )
-end
-
----@param command legate.AvailableCommand
----@return string
-local function slash_command_line(command)
-    local line = string.format('/%s  %s', command.name, command.description)
-
-    if type(command.input) == 'table' and command.input.hint ~= nil and command.input.hint ~= '' then
-        line = string.format('%s  input=%s', line, command.input.hint)
-    end
-
-    return line
-end
-
----@param current_session legate.Session
----@return legate.AdapterConfig
-local function adapter_for_session(current_session)
-    return config.adapter_for_session(current_session)
-end
-
----@param current_session legate.Session
----@return string
-local function adapter_line(current_session)
-    local selected_session = continuity.current()
-    local selected_id = selected_session and selected_session.id or nil
-    local marker = current_session.id == selected_id and '*' or ' '
-    local adapter_name = config.session_adapter_name(current_session)
-    local adapter = adapter_for_session(current_session)
-    local auth_method = adapter.auth_method or 'auto'
-
-    return string.format(
-        '%s %s  title=%s  auth=%s  command=%s  overrides=%d',
-        marker,
-        adapter_name,
-        adapter.title or adapter_name,
-        auth_method,
-        table.concat(adapter.command, ' '),
-        vim.tbl_count(adapter.config_option_overrides or {})
-    )
-end
-
----@param options legate.SessionConfigOption[]
----@return fun(option: legate.SessionConfigOption): string
-local function config_option_picker_formatter(options)
-    return picker.make_formatter(options, function(option)
-        return {
-            option.name,
-            string.format('current=%s', option.currentValue),
-            string.format('id=%s', option.id),
-            option.description or '',
-        }
-    end)
-end
-
----@param choices legate.ConfigOptionValueChoice[]
----@param current_value string
----@return fun(choice: legate.ConfigOptionValueChoice): string
-local function config_option_value_picker_formatter(choices, current_value)
-    return picker.make_formatter(choices, function(choice)
-        local marker = choice.value.value == current_value and '*' or ' '
-        local group = choice.group_name and string.format('[%s]', choice.group_name) or ''
-
-        return {
-            string.format('%s %s', marker, choice.value.name),
-            string.format('value=%s', choice.value.value),
-            group,
-            choice.value.description or '',
-        }
-    end)
-end
-
----@param commands legate.AvailableCommand[]
----@return fun(command: legate.AvailableCommand): string
-local function slash_command_picker_formatter(commands)
-    return picker.make_formatter(commands, function(command)
-        local input_hint = ''
-
-        if type(command.input) == 'table' and command.input.hint ~= nil and command.input.hint ~= '' then
-            input_hint = string.format('input=%s', command.input.hint)
-        end
-
-        return {
-            string.format('/%s', command.name),
-            command.description,
-            input_hint,
-        }
-    end)
-end
-
----@param current_session legate.Session
----@return fun(adapter_name: string): string
-local function adapter_picker_formatter(current_session)
-    local current_adapter_name = config.session_adapter_name(current_session)
-
-    return function(adapter_name)
-        local adapter = config.adapter(adapter_name)
-        local marker = adapter_name == current_adapter_name and '*' or ' '
-
-        return string.format(
-            '%s %s  id=%s  auth=%s  %s',
-            marker,
-            adapter.title or adapter_name,
-            adapter_name,
-            adapter.auth_method or 'auto',
-            table.concat(adapter.command, ' ')
-        )
-    end
-end
-
----@param sessions legate.Session[]
----@param prompt string
----@param on_choice fun(selected_session: legate.Session)
-local function pick_session(sessions, prompt, on_choice)
-    if #sessions == 0 then
-        vim.notify('No ACP sessions exist')
-        return
-    end
-
-    vim.ui.select(sessions, {
-        prompt = prompt,
-        format_item = session_line,
-    }, function(selected_session)
-        if selected_session == nil then
-            return
-        end
-
-        on_choice(selected_session)
-    end)
-end
-
----@param current_session legate.Session
----@param approval_ordinal integer
----@return legate.ApprovalEntry
-local function approval_by_ordinal(current_session, approval_ordinal)
-    for _, approval in ipairs(current_session.approval_entries) do
-        if approval.ordinal == approval_ordinal then
-            return approval
-        end
-    end
-
-    error(string.format('Unknown ACP approval: %d', approval_ordinal))
-end
+local prompt_helper
+local session_helper
+local slash_command_helper
 
 ---@return legate.Session
 local function active_session()
@@ -281,64 +78,6 @@ local function resolve_pending_approval_session(session_id)
 end
 
 ---@param current_session legate.Session
----@param config_id string
----@return legate.SessionConfigOption
-local function config_option_by_id(current_session, config_id)
-    for _, option in ipairs(current_session.config_options) do
-        if option.id == config_id then
-            return option
-        end
-    end
-
-    error(string.format('Unknown ACP config option: %s', config_id))
-end
-
----@param current_session legate.Session
----@param name string
----@return legate.AvailableCommand
-local function slash_command_by_name(current_session, name)
-    local normalized = normalize_slash_command_name(name)
-
-    for _, command in ipairs(current_session.available_commands) do
-        if command.name == normalized then
-            return command
-        end
-    end
-
-    error(string.format('Unknown ACP slash command: %s', name))
-end
-
----@param current_session legate.Session
-local function assert_config_change_allowed(current_session)
-    local waiting_session = continuity.waiting()
-
-    if waiting_session ~= nil and waiting_session.id ~= current_session.id then
-        error(
-            string.format(
-                'Cannot change ACP config options for session %s while session %s has a running turn',
-                current_session.id,
-                waiting_session.id
-            )
-        )
-    end
-end
-
----@param current_session legate.Session
-local function assert_slash_command_fetch_allowed(current_session)
-    local waiting_session = continuity.waiting()
-
-    if waiting_session ~= nil and waiting_session.id ~= current_session.id then
-        error(
-            string.format(
-                'Cannot resolve ACP slash commands for session %s while session %s has a running turn',
-                current_session.id,
-                waiting_session.id
-            )
-        )
-    end
-end
-
----@param current_session legate.Session
 ---@param action string
 local function assert_session_binding_change_allowed(current_session, action)
     if current_session.status == 'waiting' then
@@ -361,49 +100,6 @@ local function assert_session_binding_change_allowed(current_session, action)
     end
 end
 
----@param current_session legate.Session
-local function ensure_config_options(current_session)
-    local has_live_binding = continuity.transport_remote_id(current_session) ~= nil
-        or current_session.remote_sync_state == 'loaded'
-
-    if not has_live_binding and current_session.remote_sync_state == 'created' then
-        return
-    end
-
-    if has_live_binding and #current_session.config_options > 0 then
-        return
-    end
-
-    assert_config_change_allowed(current_session)
-    transport.ensure(current_session)
-end
-
----@param current_session legate.Session
----@param opts? { allow_establish?: boolean }
-local function ensure_slash_commands(current_session, opts)
-    local transport_remote_id = continuity.transport_remote_id(current_session)
-
-    if transport_remote_id == nil and current_session.remote_sync_state == 'created' then
-        return
-    end
-
-    if
-        transport_remote_id ~= nil
-        and current_session.turn_id == 0
-        and current_session.status ~= 'cancelled'
-        and #current_session.available_commands > 0
-    then
-        return
-    end
-
-    if opts ~= nil and opts.allow_establish == false then
-        return
-    end
-
-    assert_slash_command_fetch_allowed(current_session)
-    transport.ensure(current_session)
-end
-
 ---@param current_session legate.Session?
 store_draft = function(current_session)
     if current_session == nil then
@@ -423,456 +119,212 @@ store_draft = function(current_session)
     end
 end
 
----@param current_session legate.Session
----@return string
-local function visible_prompt(current_session)
-    local prompt = current_session.draft_prompt or ''
-    local current = continuity.current()
+prompt_helper = prompt_api.new({
+    continuity = continuity,
+    transport = transport,
+    active_session = active_session,
+    store_draft = store_draft,
+    select_session = function(session_id)
+        return M.select_session(session_id)
+    end,
+})
 
-    if current == nil or current.id ~= current_session.id then
-        return prompt
-    end
+approval_helper = approval_api.new({
+    buffer = buffer,
+    continuity = continuity,
+    formatters = formatters,
+    prompt_helper = prompt_helper,
+    render = render,
+    resolve_pending_approval_session = resolve_pending_approval_session,
+    resolve_session = resolve_session,
+    select_session = function(session_id)
+        return M.select_session(session_id)
+    end,
+    transport = transport,
+})
 
-    store_draft(current_session)
-    return current_session.draft_prompt
-end
+configuration_helper = configuration_api.new({
+    buffer = buffer,
+    config_option = require('legate.config.option'),
+    continuity = continuity,
+    formatters = formatters,
+    prompt_helper = prompt_helper,
+    render = render,
+    resolve_session = resolve_session,
+    transport = transport,
+})
 
----@param current_session legate.Session
----@param prompt string
----@return legate.Session
-local function submit_session_prompt(current_session, prompt)
-    if current_session.status == 'waiting' then
-        error('Cannot submit a new ACP prompt while this session already has a running turn')
-    end
+slash_command_helper = slash_command_api.new({
+    continuity = continuity,
+    formatters = formatters,
+    prompt_helper = prompt_helper,
+    resolve_session = resolve_session,
+    transport = transport,
+})
 
-    if continuity.waiting() ~= nil then
-        error('Cannot submit a new ACP prompt while another session turn is still running')
-    end
-
-    if prompt == '' then
-        error('ACP prompt is empty')
-    end
-
-    if current_session.remote_sync_state == 'load_failed' then
-        error(
-            'ACP session is in load_failed recovery state; retry `:LegateLoadSession` or create a fresh remote with `:LegateRebindSession`'
-        )
-    end
-
-    continuity.set_draft_prompt(current_session, prompt)
-    transport.ensure(current_session)
-    current_session = continuity.begin_prompt(current_session, prompt)
-
-    local selected_session = continuity.current()
-
-    if buffer.get() ~= nil and selected_session ~= nil and selected_session.id == current_session.id then
-        render.render(current_session, '')
-    end
-
-    transport.prompt(current_session, prompt)
-
-    return current_session
-end
-
----@param command legate.AvailableCommand
----@param provided_input? string
----@return string
-local function slash_command_prompt(command, provided_input)
-    local normalized_input = vim.trim(provided_input or '')
-    local prompt = string.format('/%s', command.name)
-
-    if type(command.input) == 'table' and normalized_input == '' then
-        error(string.format('ACP slash command requires input: /%s', command.name))
-    end
-
-    if normalized_input == '' then
-        return prompt
-    end
-
-    return string.format('%s %s', prompt, normalized_input)
-end
-
----@return integer, legate.Session, string
-local function ensure_chat_surface()
-    local current_session = active_session()
-    local bufnr = buffer.ensure()
-    local prompt = input.capture_prompt(bufnr)
-
-    if prompt == nil then
-        prompt = current_session.draft_prompt or ''
-        render.render(current_session, prompt)
-    else
-        continuity.set_draft_prompt(current_session, prompt)
-    end
-
-    return bufnr, current_session, prompt
-end
-
----Create or reveal the ACP chat buffer.
----@return integer
-function M.open_chat()
-    local bufnr, current_session, prompt = ensure_chat_surface()
-
-    buffer.open()
-    render.render(current_session, prompt)
-    vim.api.nvim_win_set_cursor(0, {
-        vim.api.nvim_buf_line_count(bufnr),
-        0,
-    })
-
-    local ok, edit = pcall(require, 'legate.ui.edit')
-
-    if ok and type(edit.refresh) == 'function' then
-        edit.refresh(bufnr)
-    end
-
-    return bufnr
-end
+session_helper = session_api.new({
+    buffer = buffer,
+    config = config,
+    continuity = continuity,
+    persistence = persistence,
+    prompt_helper = prompt_helper,
+    render = render,
+    transport = transport,
+    pickers = pickers,
+    formatters = formatters,
+    active_session = active_session,
+    resolve_session = resolve_session,
+    assert_session_binding_change_allowed = assert_session_binding_change_allowed,
+    store_draft = store_draft,
+    open_chat = function()
+        return M.open_chat()
+    end,
+})
 
 ---Create and select a new ACP session, then render it.
 ---@return legate.Session
 function M.new_session()
-    store_draft(continuity.current())
-
-    local current_session = continuity.create(config.default_adapter_name())
-
-    render.render(current_session, current_session.draft_prompt)
-
-    return current_session
+    return session_helper.new_session()
 end
 
 ---Return the current ACP session, creating one if configured to do so.
 ---@return legate.Session
 function M.current_session()
-    return active_session()
+    return session_helper.current_session()
+end
+
+---Create or reveal the ACP chat buffer.
+---@return integer
+function M.open_chat()
+    return prompt_helper.open_chat()
 end
 
 ---Return all local ACP sessions ordered by creation ordinal.
 ---@return legate.Session[]
 function M.list_sessions()
-    return continuity.list()
+    return session_helper.list_sessions()
 end
 
 ---Return formatted local-session lines for command-line or picker use.
 ---@return string[]
 function M.session_lines()
-    local lines = {}
-
-    for _, current_session in ipairs(continuity.list()) do
-        table.insert(lines, session_line(current_session))
-    end
-
-    return lines
+    return session_helper.session_lines()
 end
 
 ---Return the configured ACP adapter names.
 ---@return string[]
 function M.adapter_names()
-    return config.adapter_names()
+    return session_helper.adapter_names()
 end
 
 ---Return the adapter selected for the resolved ACP continuity.---@param session_id? string
 ---@return string
 function M.adapter_name(session_id)
-    local current_session = session_id and resolve_session(session_id) or continuity.current()
-    return config.session_adapter_name(current_session)
+    return session_helper.adapter_name(session_id)
 end
 
 ---Return formatted ACP adapter lines for command-line or picker use.
 ---@param session_id? string
 ---@return string[]
 function M.adapter_lines(session_id)
-    local current_session = session_id and resolve_session(session_id) or continuity.current()
-    local current_adapter_name = config.session_adapter_name(current_session)
-    local lines = {}
-
-    for _, adapter_name in ipairs(config.adapter_names()) do
-        local adapter = config.adapter(adapter_name)
-        local marker = adapter_name == current_adapter_name and '*' or ' '
-
-        table.insert(
-            lines,
-            string.format(
-                '%s %s  title=%s  auth=%s  command=%s  overrides=%d',
-                marker,
-                adapter_name,
-                adapter.title or adapter_name,
-                adapter.auth_method or 'auto',
-                table.concat(adapter.command, ' '),
-                vim.tbl_count(adapter.config_option_overrides or {})
-            )
-        )
-    end
-
-    return lines
+    return session_helper.adapter_lines(session_id)
 end
 
 ---Return the current ACP approval history for command or picker use.
 ---@param session_id? string
 ---@return legate.ApprovalEntry[]
 function M.approvals(session_id)
-    local current_session = session_id and continuity.get(session_id) or continuity.current()
-
-    if current_session == nil then
-        return {}
-    end
-
-    return vim.deepcopy(current_session.approval_entries)
+    return approval_helper.approvals(session_id)
 end
 
 ---Return the currently pending inline ACP approval, if any.
 ---@param session_id? string
 ---@return legate.PendingApproval?
 function M.pending_approval(session_id)
-    local current_session = resolve_pending_approval_session(session_id)
-    return vim.deepcopy(continuity.pending_approval(current_session))
+    return approval_helper.pending_approval(session_id)
 end
 
 ---Return all currently pending inline ACP approvals for the resolved continuity.---@param session_id? string
 ---@return legate.PendingApproval[]
 function M.pending_approvals(session_id)
-    local current_session = resolve_pending_approval_session(session_id)
-    return vim.deepcopy(continuity.pending_approvals(current_session))
+    return approval_helper.pending_approvals(session_id)
 end
 
 ---Return formatted approval lines for command-line display or picker use.
 ---@param session_id? string
 ---@return string[]
 function M.approval_lines(session_id)
-    local lines = {}
-
-    for _, approval in ipairs(M.approvals(session_id)) do
-        table.insert(lines, approval_line(approval))
-    end
-
-    return lines
+    return approval_helper.approval_lines(session_id)
 end
 
 ---Persist all local ACP sessions to disk.
 ---@return boolean, legate.SessionPersistencePayload|string
 function M.save_sessions()
-    store_draft(continuity.current())
-
-    local payload = continuity.snapshot()
-    local ok, err = persistence.save(payload)
-
-    if not ok then
-        vim.notify(string.format('Failed to save ACP sessions: %s', err), vim.log.levels.ERROR)
-        return false, err
-    end
-
-    return true, payload
+    return session_helper.save_sessions()
 end
 
 ---Restore local ACP sessions from disk.
 ---@param opts? { open_chat?: boolean }
 ---@return legate.Session[]
 function M.restore_sessions(opts)
-    local persisted_enabled = config.get().persist_sessions
-    local persisted = persisted_enabled and persistence.load() or nil
-
-    if persisted_enabled and persisted == nil then
-        return {}
-    end
-
-    local restored = continuity.restore(persisted)
-    local current_session = continuity.current()
-    local should_open = opts ~= nil and opts.open_chat or false
-    local has_buffer = buffer.get() ~= nil
-
-    if current_session ~= nil then
-        if should_open and not has_buffer then
-            M.open_chat()
-        elseif has_buffer then
-            render.render(current_session, current_session.draft_prompt)
-        end
-
-        return restored
-    end
-
-    if should_open then
-        if #restored > 0 or config.get().auto_create_session then
-            M.open_chat()
-        elseif not has_buffer then
-            buffer.open()
-        end
-    elseif has_buffer then
-        buffer.clear()
-    end
-
-    return restored
+    return session_helper.restore_sessions(opts)
 end
 
 ---Clear persisted ACP session storage from disk.
 function M.clear_session_storage()
-    persistence.clear()
+    return session_helper.clear_session_storage()
 end
 
 ---Return the current session config options for command or picker use.
 ---@param session_id? string
 ---@return legate.SessionConfigOption[]
 function M.config_options(session_id)
-    local current_session = resolve_session(session_id)
-    ensure_config_options(current_session)
-    return vim.deepcopy(current_session.config_options)
+    return configuration_helper.config_options(session_id)
 end
 
 ---Return formatted config option lines for command-line display.
 ---@param session_id? string
 ---@return string[]
 function M.config_option_lines(session_id)
-    local lines = {}
-
-    for _, option in ipairs(M.config_options(session_id)) do
-        table.insert(lines, config_option_line(option))
-    end
-
-    return lines
+    return configuration_helper.config_option_lines(session_id)
 end
 
 ---Return the current ACP slash commands for command or picker use.
 ---@param session_id? string
 ---@return legate.AvailableCommand[]
 function M.slash_commands(session_id)
-    local current_session = resolve_session(session_id)
-    ensure_slash_commands(current_session)
-    return vim.deepcopy(current_session.available_commands)
+    return slash_command_helper.slash_commands(session_id)
 end
 
 ---Return formatted ACP slash-command lines for command-line display or picker use.
 ---@param session_id? string
 ---@return string[]
 function M.slash_command_lines(session_id)
-    local lines = {}
-
-    for _, command in ipairs(M.slash_commands(session_id)) do
-        table.insert(lines, slash_command_line(command))
-    end
-
-    return lines
+    return slash_command_helper.slash_command_lines(session_id)
 end
 
 ---Return locally known ACP slash-command names for completion use.
 ---@param session_id? string
 ---@return string[]
 function M.slash_command_names(session_id)
-    local current_session = session_id and continuity.get(session_id) or continuity.current()
-
-    if current_session == nil then
-        return {}
-    end
-
-    local names = {}
-
-    for _, command in ipairs(current_session.available_commands) do
-        table.insert(names, command.name)
-    end
-
-    return names
+    return slash_command_helper.slash_command_names(session_id)
 end
 
 ---Open a picker for session config options, then a second picker for the selected value.
 ---@param session_id? string
 function M.pick_config_option(session_id)
-    local current_session = resolve_session(session_id)
-    ensure_config_options(current_session)
-
-    if #current_session.config_options == 0 then
-        vim.notify('No ACP config options are available')
-        return
-    end
-
-    local format_option = config_option_picker_formatter(current_session.config_options)
-
-    local function pick_option()
-        vim.ui.select(current_session.config_options, {
-            prompt = 'Select ACP config option',
-            format_item = format_option,
-        }, function(selected_option)
-            if selected_option == nil then
-                return
-            end
-
-            local values = config_option.choices(selected_option)
-
-            if #values == 0 then
-                vim.notify(string.format('ACP config option has no selectable values: %s', selected_option.id))
-                return
-            end
-
-            vim.ui.select(values, {
-                prompt = string.format('Select value for ACP config option: %s', selected_option.name),
-                format_item = config_option_value_picker_formatter(values, selected_option.currentValue),
-            }, function(selected_choice)
-                if selected_choice == nil then
-                    pick_option()
-                    return
-                end
-
-                M.set_config_option(selected_option.id, selected_choice.value.value, current_session.id)
-            end)
-        end)
-    end
-
-    pick_option()
+    return configuration_helper.pick_config_option(session_id)
 end
 
 ---Open a picker for ACP slash commands and submit the selected command prompt.
 ---@param session_id? string
 function M.pick_slash_command(session_id)
-    local current_session = resolve_session(session_id)
-    ensure_slash_commands(current_session)
-
-    if #current_session.available_commands == 0 then
-        vim.notify('No ACP slash commands are available')
-        return
-    end
-
-    local format_command = slash_command_picker_formatter(current_session.available_commands)
-
-    local function pick_command()
-        vim.ui.select(current_session.available_commands, {
-            prompt = 'Select ACP slash command',
-            format_item = format_command,
-        }, function(selected_command)
-            if selected_command == nil then
-                return
-            end
-
-            if type(selected_command.input) ~= 'table' then
-                M.run_slash_command(selected_command.name, nil, current_session.id)
-                return
-            end
-
-            vim.ui.input({
-                prompt = string.format('Input for ACP slash command /%s', selected_command.name),
-                default = '',
-            }, function(provided_input)
-                if provided_input == nil then
-                    pick_command()
-                    return
-                end
-
-                local trimmed_input = vim.trim(provided_input)
-
-                if trimmed_input == '' then
-                    vim.notify(string.format('ACP slash command requires input: /%s', selected_command.name))
-                    return
-                end
-
-                M.run_slash_command(selected_command.name, trimmed_input, current_session.id)
-            end)
-        end)
-    end
-
-    pick_command()
+    return slash_command_helper.pick_slash_command(session_id)
 end
 
 ---Open a picker for local ACP sessions and select the chosen one.
 function M.pick_session()
-    pick_session(continuity.list(), 'Select ACP session', function(selected_session)
-        M.select_session(selected_session.id)
-    end)
+    return session_helper.pick_session()
 end
 
 ---Select an ACP adapter for a local session and reset stale remote binding state.
@@ -880,63 +332,20 @@ end
 ---@param session_id? string
 ---@return legate.Session
 function M.select_adapter(adapter_name, session_id)
-    local current_session = resolve_session(session_id)
-    assert_session_binding_change_allowed(current_session, 'switch adapter for')
-    config.adapter(adapter_name)
-
-    if current_session.adapter_name == adapter_name then
-        return current_session
-    end
-
-    local prompt = visible_prompt(current_session)
-
-    continuity.set_adapter(current_session, adapter_name)
-    continuity.reset_adapter_runtime_state(current_session)
-    transport.clear()
-
-    local selected_session = continuity.current()
-
-    if buffer.get() ~= nil and selected_session ~= nil and selected_session.id == current_session.id then
-        render.render(current_session, prompt)
-    end
-
-    return current_session
+    return session_helper.select_adapter(adapter_name, session_id)
 end
 
 ---Open a picker for ACP adapters and switch the resolved session to the chosen adapter.
 ---@param session_id? string
 function M.pick_adapter(session_id)
-    local current_session = resolve_session(session_id)
-    local adapter_names = config.adapter_names()
-
-    if #adapter_names == 0 then
-        vim.notify('No ACP adapters are configured')
-        return
-    end
-
-    vim.ui.select(adapter_names, {
-        prompt = string.format('Select ACP adapter for %s', current_session.id),
-        format_item = adapter_picker_formatter(current_session),
-    }, function(selected_adapter_name)
-        if selected_adapter_name == nil then
-            return
-        end
-
-        M.select_adapter(selected_adapter_name, current_session.id)
-    end)
+    return session_helper.pick_adapter(session_id)
 end
 
 ---Select a local ACP session and rerender the shared chat buffer.
 ---@param session_id string
 ---@return legate.Session
 function M.select_session(session_id)
-    store_draft(continuity.current())
-
-    local current_session = continuity.select(session_id)
-
-    render.render(current_session, current_session.draft_prompt)
-
-    return current_session
+    return session_helper.select_session(session_id)
 end
 
 ---Reveal an approval entry in the shared Markdown chat buffer.
@@ -944,52 +353,13 @@ end
 ---@param session_id? string
 ---@return legate.ApprovalEntry
 function M.reveal_approval(approval_ordinal, session_id)
-    local current_session = resolve_session(session_id)
-    local approval = approval_by_ordinal(current_session, approval_ordinal)
-    local selected_session = continuity.current()
-
-    if selected_session == nil or selected_session.id ~= current_session.id then
-        current_session = M.select_session(current_session.id)
-    else
-        render.render(current_session, visible_prompt(current_session))
-    end
-
-    local bufnr = buffer.open()
-    local target_line = render.approval_summary_line(approval, current_session)
-    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-
-    for line_number, line in ipairs(lines) do
-        if line == target_line then
-            vim.api.nvim_win_set_cursor(0, {
-                line_number,
-                0,
-            })
-            return approval
-        end
-    end
-
-    error(string.format('ACP approval is not visible in the chat buffer: %d', approval_ordinal))
+    return approval_helper.reveal_approval(approval_ordinal, session_id)
 end
 
 ---Open a picker for current-session approvals and reveal the chosen entry.
 ---@param session_id? string
 function M.pick_approval(session_id)
-    local current_session = resolve_session(session_id)
-
-    if #current_session.approval_entries == 0 then
-        vim.notify('No Legate approvals are available')
-        return
-    end
-
-    vim.ui.select(current_session.approval_entries, {
-        prompt = 'Select Legate approval',
-        format_item = approval_line,
-    }, function(selected_approval)
-        if selected_approval == nil then
-            return
-        end
-        M.reveal_approval(selected_approval.ordinal, current_session.id)
-    end)
+    return approval_helper.pick_approval(session_id)
 end
 
 ---Resolve the current inline ACP approval by option id or 1-based index.
@@ -997,81 +367,20 @@ end
 ---@param session_id? string
 ---@return legate.PermissionOutcome
 function M.select_approval_option(selection, session_id)
-    local current_session = resolve_pending_approval_session(session_id)
-
-    if type(selection) == 'string' then
-        local request_id, option_id = selection:match('^(.-):([^:]+)$')
-
-        if request_id ~= nil and option_id ~= nil then
-            local pending = continuity.pending_approval(current_session)
-
-            if pending == nil or pending.request_id ~= request_id then
-                for _, candidate in ipairs(continuity.pending_approvals(current_session)) do
-                    if candidate.request_id == request_id then
-                        pending = candidate
-                        break
-                    end
-                end
-            end
-
-            if pending ~= nil and pending.request_id == request_id then
-                selection = option_id
-                if continuity.pending_approval(current_session) ~= pending then
-                    pending = continuity.promote_pending_approval_by_request_id(current_session, pending.request_id)
-                        or pending
-                end
-            end
-        end
-    end
-
-    return transport.select_pending_approval(current_session, selection)
+    return approval_helper.select_approval_option(selection, session_id)
 end
 
 ---Explicitly bind or reload an ACP session against the remote transport.
 ---@param session_id? string
 ---@return legate.Session
 function M.load_session(session_id)
-    local current_session = resolve_session(session_id)
-    assert_session_binding_change_allowed(current_session, 'load')
-    local prompt = visible_prompt(current_session)
-    local ok, err = pcall(transport.load, current_session)
-
-    local selected_session = continuity.current()
-
-    if buffer.get() ~= nil and selected_session ~= nil and selected_session.id == current_session.id then
-        render.render(current_session, prompt)
-    end
-
-    if not ok then
-        error(err, 0)
-    end
-
-    return current_session
+    return session_helper.load_session(session_id)
 end
 
 ---Recover a load_failed ACP session by creating a fresh remote ACP continuity.---@param session_id? string
 ---@return legate.Session
 function M.rebind_session(session_id)
-    local current_session = resolve_session(session_id)
-    assert_session_binding_change_allowed(current_session, 'rebind')
-
-    if current_session.remote_sync_state ~= 'load_failed' then
-        error(string.format('ACP session is not in load_failed recovery state: %s', current_session.id))
-    end
-
-    local prompt = visible_prompt(current_session)
-    local ok, err = pcall(transport.rebind, current_session)
-    if not ok then
-        error(err, 0)
-    end
-
-    local selected_session = continuity.current()
-
-    if buffer.get() ~= nil and selected_session ~= nil and selected_session.id == current_session.id then
-        render.render(current_session, prompt)
-    end
-
-    return current_session
+    return session_helper.rebind_session(session_id)
 end
 
 ---Submit an ACP slash command through the normal prompt path.
@@ -1080,59 +389,14 @@ end
 ---@param session_id? string
 ---@return legate.Session
 function M.run_slash_command(name, command_input, session_id)
-    local current_session = resolve_session(session_id)
-    ensure_slash_commands(current_session)
-    local command = slash_command_by_name(current_session, name)
-    local prompt = slash_command_prompt(command, command_input)
-
-    return submit_session_prompt(current_session, prompt)
+    return slash_command_helper.run_slash_command(name, command_input, session_id)
 end
 
 ---Close a local ACP session and update the shared chat buffer if needed.
 ---@param session_id? string
 ---@return legate.Session, legate.Session?
 function M.close_session(session_id)
-    local target_id = session_id
-
-    if target_id == nil then
-        local current_session = continuity.current()
-
-        if current_session == nil then
-            error('No ACP session exists')
-        end
-
-        target_id = current_session.id
-    end
-
-    local closing_session = assert(continuity.get(target_id), string.format('Unknown ACP session: %s', target_id))
-
-    if closing_session.status == 'waiting' then
-        error(string.format('Cannot close ACP session while a prompt turn is still running: %s', target_id))
-    end
-
-    local current_session = continuity.current()
-    local is_current = current_session ~= nil and current_session.id == target_id
-    local had_buffer = buffer.get() ~= nil
-
-    if is_current then
-        store_draft(current_session)
-    end
-
-    local closed_session, next_session = continuity.close(target_id)
-
-    if is_current then
-        if next_session == nil and config.get().auto_create_session then
-            next_session = continuity.create()
-        end
-
-        if had_buffer and next_session ~= nil then
-            render.render(next_session, next_session.draft_prompt)
-        elseif had_buffer then
-            buffer.clear()
-        end
-    end
-
-    return closed_session, next_session
+    return session_helper.close_session(session_id)
 end
 
 ---Set a session config option through ACP and rerender the chat buffer if needed.
@@ -1141,56 +405,12 @@ end
 ---@param session_id? string
 ---@return legate.Session
 function M.set_config_option(config_id, value, session_id)
-    local current_session = resolve_session(session_id)
-    assert_config_change_allowed(current_session)
-    ensure_config_options(current_session)
-
-    local option = config_option_by_id(current_session, config_id)
-    local choices = config_option.choices(option)
-
-    if #choices == 0 then
-        error(string.format('ACP config option has no selectable values: %s', config_id))
-    end
-
-    local value_exists = false
-
-    for _, choice in ipairs(choices) do
-        if choice.value.value == value then
-            value_exists = true
-            break
-        end
-    end
-
-    if not value_exists then
-        error(string.format('Invalid ACP config option value for %s: %s', config_id, value))
-    end
-
-    local prompt = visible_prompt(current_session)
-    transport.set_config_option(current_session, config_id, value)
-
-    local selected_session = continuity.current()
-
-    if buffer.get() ~= nil and selected_session ~= nil and selected_session.id == current_session.id then
-        render.render(current_session, prompt)
-    end
-
-    return current_session
+    return configuration_helper.set_config_option(config_id, value, session_id)
 end
 
 ---Open a picker for closable local ACP sessions and close the chosen one.
 function M.pick_close_session()
-    local closable_sessions = vim.tbl_filter(function(current_session)
-        return current_session.status ~= 'waiting'
-    end, continuity.list())
-
-    if #closable_sessions == 0 then
-        vim.notify('No closable ACP sessions exist')
-        return
-    end
-
-    pick_session(closable_sessions, 'Close ACP session', function(selected_session)
-        M.close_session(selected_session.id)
-    end)
+    return session_helper.pick_close_session()
 end
 
 ---Append a transcript message and rerender the chat buffer.
@@ -1198,84 +418,31 @@ end
 ---@param text string
 ---@return legate.Session
 function M.append_message(role, text)
-    local _, current_session, prompt = ensure_chat_surface()
-
-    continuity.append_message(current_session, role, text)
-    render.render(current_session, prompt)
-
-    return current_session
+    return prompt_helper.append_message(role, text)
 end
 
 ---Submit the editable prompt region as the next ACP prompt.
 ---@return legate.Session
 function M.submit_prompt()
-    local bufnr, current_session = ensure_chat_surface()
-    local prompt = input.get_prompt(bufnr)
-    return submit_session_prompt(current_session, prompt)
+    return prompt_helper.submit_prompt()
 end
 
 ---Cancel the current ACP prompt state and rerender the chat buffer.
 ---@return legate.Session?
 function M.cancel_prompt()
-    local current_session = continuity.current()
-    local waiting_session = continuity.waiting()
-
-    if current_session == nil and waiting_session == nil then
-        return nil
-    end
-
-    if current_session ~= nil then
-        store_draft(current_session)
-    end
-
-    local target_session = nil
-
-    if current_session ~= nil and current_session.status == 'waiting' then
-        target_session = current_session
-    else
-        target_session = waiting_session
-    end
-
-    if target_session == nil or target_session.status ~= 'waiting' then
-        return nil
-    end
-
-    if current_session ~= nil and current_session.id ~= target_session.id then
-        M.select_session(target_session.id)
-        current_session = continuity.current()
-    end
-
-    local prompt = target_session.pending_prompt or target_session.draft_prompt or ''
-
-    transport.cancel(target_session)
-    continuity.set_draft_prompt(target_session, prompt)
-    target_session = continuity.cancel(target_session)
-
-    if current_session ~= nil and current_session.id == target_session.id then
-        render.render(target_session, prompt)
-    end
-
-    return target_session
+    return prompt_helper.cancel_prompt()
 end
 
 ---Return the current editable ACP prompt text.
 ---@return string
 function M.get_prompt()
-    local bufnr, current_session = ensure_chat_surface()
-    local prompt = input.get_prompt(bufnr)
-
-    continuity.set_draft_prompt(current_session, prompt)
-
-    return prompt
+    return prompt_helper.get_prompt()
 end
 
 ---Replace the editable ACP prompt text.
 ---@param text string
 function M.set_prompt(text)
-    local bufnr, current_session = ensure_chat_surface()
-
-    input.set_prompt(bufnr, text)
-    continuity.set_draft_prompt(current_session, text)
+    return prompt_helper.set_prompt(text)
 end
 
 ---Return the configured ACP MCP servers without runtime injection side effects.
