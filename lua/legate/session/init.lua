@@ -100,56 +100,6 @@ registry_helper = session_registry.new({
     sessions = sessions,
 })
 
----@param adapter_name? string
----@return legate.Session
-function M.create(adapter_name)
-    return registry_helper.create(adapter_name)
-end
-
----@param adapter_name? string
----@return legate.Session
-function M.ensure(adapter_name)
-    return registry_helper.ensure(adapter_name)
-end
-
----@return legate.Session?
-function M.current()
-    return registry_helper.current()
-end
-
----@param session_id string
----@return legate.Session?
-function M.get(session_id)
-    return registry_helper.get(session_id)
-end
-
----@param session_id string
----@return legate.Session
-function M.select(session_id)
-    return registry_helper.select(session_id)
-end
-
----@return legate.Session[]
-function M.list()
-    return registry_helper.list()
-end
-
----@param session_id string
----@return legate.Session, legate.Session?
-function M.close(session_id)
-    return registry_helper.close(session_id)
-end
-
----@return legate.Session?
-function M.waiting()
-    return registry_helper.waiting()
-end
-
----@return legate.Session?
-function M.pending_approval_session()
-    return registry_helper.pending_approval_session()
-end
-
 state_helper = session_state.new({
     now = now,
     normalize_available_commands = persistence_helper.normalize_available_commands,
@@ -160,121 +110,6 @@ state_helper = session_state.new({
         next_message_id = next_message_id + 1
     end,
 })
-
----@param session legate.Session
----@param role legate.MessageRole
----@param text string
----@param opts? { stream_kind?: 'tool_call'|'approval', stream_key?: string, status_state?: string, status_title?: string }
----@return legate.Message
-function M.append_message(session, role, text, opts)
-    return state_helper.append_message(session, role, text, opts)
-end
-
----@param current_session legate.Session
----@param role legate.MessageRole
----@param text string
----@return legate.Message?
-function M.append_chunk(current_session, role, text)
-    return state_helper.append_chunk(current_session, role, text)
-end
-
----@param current_session legate.Session
----@param prompt string
-function M.set_draft_prompt(current_session, prompt)
-    return state_helper.set_draft_prompt(current_session, prompt)
-end
-
----@param current_session legate.Session
----@param prompt string
----@return legate.Session
-function M.begin_prompt(current_session, prompt)
-    return state_helper.begin_prompt(current_session, prompt)
-end
-
----@param current_session legate.Session
----@return integer
-function M.current_turn_id(current_session)
-    return state_helper.current_turn_id(current_session)
-end
-
----@param current_session legate.Session
----@param turn_id integer
----@return boolean
-function M.matches_turn(current_session, turn_id)
-    return state_helper.matches_turn(current_session, turn_id)
-end
-
----@param current_session legate.Session
----@param stop_reason legate.StopReason
-function M.finish_prompt(current_session, stop_reason)
-    return state_helper.finish_prompt(current_session, stop_reason)
-end
-
----@param current_session legate.Session
----@param remote_id string?
----@param remote_sync_state? legate.RemoteSyncState
----@param remote_sync_error? string
-function M.set_remote_id(current_session, remote_id, remote_sync_state, remote_sync_error)
-    return state_helper.set_remote_id(current_session, remote_id, remote_sync_state, remote_sync_error)
-end
-
----@param current_session legate.Session
----@param remote_id string?
----@param remote_sync_state? legate.RemoteSyncState
----@param remote_sync_error? string
-function M.set_transport_remote_id(current_session, remote_id, remote_sync_state, remote_sync_error)
-    return state_helper.set_transport_remote_id(current_session, remote_id, remote_sync_state, remote_sync_error)
-end
-
----@param current_session legate.Session
----@param remote_sync_state? legate.RemoteSyncState
----@param remote_sync_error? string
-function M.clear_remote_id(current_session, remote_sync_state, remote_sync_error)
-    return state_helper.clear_remote_id(current_session, remote_sync_state, remote_sync_error)
-end
-
----@param current_session legate.Session
----@return string?
-function M.transport_remote_id(current_session)
-    return state_helper.transport_remote_id(current_session)
-end
-
----@param current_session legate.Session
----@param cwd string?
-function M.set_cwd(current_session, cwd)
-    return state_helper.set_cwd(current_session, cwd)
-end
-
----@param current_session legate.Session
----@param remote_sync_state legate.RemoteSyncState
----@param remote_sync_error? string
-function M.set_remote_sync_state(current_session, remote_sync_state, remote_sync_error)
-    return state_helper.set_remote_sync_state(current_session, remote_sync_state, remote_sync_error)
-end
-
----@param current_session legate.Session
----@param agent_info? legate.AgentInfo
-function M.set_agent_info(current_session, agent_info)
-    return state_helper.set_agent_info(current_session, agent_info)
-end
-
----@param current_session legate.Session
----@param config_options legate.SessionConfigOption[]
-function M.set_config_options(current_session, config_options)
-    return state_helper.set_config_options(current_session, config_options)
-end
-
----@param current_session legate.Session
----@param entries legate.PlanEntry[]
-function M.set_plan(current_session, entries)
-    return state_helper.set_plan(current_session, entries)
-end
-
----@param current_session legate.Session
----@param available_commands legate.AvailableCommand[]
-function M.set_available_commands(current_session, available_commands)
-    return state_helper.set_available_commands(current_session, available_commands)
-end
 
 activity_helper = session_activity.new({
     now = now,
@@ -294,92 +129,47 @@ activity_helper = session_activity.new({
     end,
 })
 
----@param current_session legate.Session
----@param tool_call legate.ToolCall
----@return legate.ToolCallState
-function M.add_tool_call(current_session, tool_call)
-    return activity_helper.add_tool_call(current_session, tool_call)
-end
+M.create = registry_helper.create
+M.ensure = registry_helper.ensure
+M.current = registry_helper.current
+M.get = registry_helper.get
+M.select = registry_helper.select
+M.list = registry_helper.list
+M.close = registry_helper.close
+M.waiting = registry_helper.waiting
+M.pending_approval_session = registry_helper.pending_approval_session
 
----@param current_session legate.Session
----@param tool_call_update legate.ToolCallUpdate
----@return legate.ToolCallState
-function M.update_tool_call(current_session, tool_call_update)
-    return activity_helper.update_tool_call(current_session, tool_call_update)
-end
+M.append_message = state_helper.append_message
+M.append_chunk = state_helper.append_chunk
+M.set_draft_prompt = state_helper.set_draft_prompt
+M.begin_prompt = state_helper.begin_prompt
+M.current_turn_id = state_helper.current_turn_id
+M.matches_turn = state_helper.matches_turn
+M.finish_prompt = state_helper.finish_prompt
+M.set_remote_id = state_helper.set_remote_id
+M.set_transport_remote_id = state_helper.set_transport_remote_id
+M.clear_remote_id = state_helper.clear_remote_id
+M.transport_remote_id = state_helper.transport_remote_id
+M.set_cwd = state_helper.set_cwd
+M.set_remote_sync_state = state_helper.set_remote_sync_state
+M.set_agent_info = state_helper.set_agent_info
+M.set_config_options = state_helper.set_config_options
+M.set_plan = state_helper.set_plan
+M.set_available_commands = state_helper.set_available_commands
 
----@param current_session legate.Session
----@param tool_call_id string?
----@return legate.ToolCallState?
-function M.tool_call_by_id(current_session, tool_call_id)
-    return activity_helper.tool_call_by_id(current_session, tool_call_id)
-end
-
----@param current_session legate.Session
----@param permission legate.PermissionRequest
----@param outcome legate.PermissionOutcome
----@param source legate.PermissionStrategy
-function M.record_approval(current_session, permission, outcome, source)
-    return activity_helper.record_approval(current_session, permission, outcome, source)
-end
-
----@param current_session legate.Session
----@param permission legate.PermissionRequest
-function M.wait_for_approval(current_session, permission)
-    return activity_helper.wait_for_approval(current_session, permission)
-end
-
----@param current_session legate.Session
----@param update table
-function M.apply_update(current_session, update)
-    return activity_helper.apply_update(current_session, update)
-end
-
----@param current_session legate.Session
----@return legate.Session
-function M.cancel(current_session)
-    return activity_helper.cancel(current_session)
-end
-
----@param current_session legate.Session
----@return legate.PendingApproval?
-function M.pending_approval(current_session)
-    return activity_helper.pending_approval(current_session)
-end
-
----@param current_session legate.Session
----@return legate.PendingApproval[]
-function M.pending_approvals(current_session)
-    return activity_helper.pending_approvals(current_session)
-end
-
----@param current_session legate.Session
----@param tool_call_id string?
----@return legate.PendingApproval?
-function M.pending_approval_by_tool_call_id(current_session, tool_call_id)
-    return activity_helper.pending_approval_by_tool_call_id(current_session, tool_call_id)
-end
-
----@param current_session legate.Session
----@param request_id string
----@return legate.PendingApproval?
-function M.clear_pending_approval_by_request_id(current_session, request_id)
-    return activity_helper.clear_pending_approval_by_request_id(current_session, request_id)
-end
-
----@param current_session legate.Session
----@param request_id string
----@return legate.PendingApproval?
-function M.promote_pending_approval_by_request_id(current_session, request_id)
-    return activity_helper.promote_pending_approval_by_request_id(current_session, request_id)
-end
-
----@param current_session legate.Session
----@param tool_call_id string?
----@return legate.PendingApproval?
-function M.clear_pending_approval(current_session, tool_call_id)
-    return activity_helper.clear_pending_approval(current_session, tool_call_id)
-end
+M.add_tool_call = activity_helper.add_tool_call
+M.update_tool_call = activity_helper.update_tool_call
+M.tool_call_by_id = activity_helper.tool_call_by_id
+M.record_approval = activity_helper.record_approval
+M.wait_for_approval = activity_helper.wait_for_approval
+M.apply_update = activity_helper.apply_update
+M.cancel = activity_helper.cancel
+M.pending_approval = activity_helper.pending_approval
+M.pending_approvals = activity_helper.pending_approvals
+M.pending_approval_by_tool_call_id = activity_helper.pending_approval_by_tool_call_id
+M.clear_pending_approval_by_request_id = activity_helper.clear_pending_approval_by_request_id
+M.promote_pending_approval_by_request_id = activity_helper.promote_pending_approval_by_request_id
+M.clear_pending_approval = activity_helper.clear_pending_approval
 
 reconcile_status_messages = function(current_session)
     return activity_helper.reconcile_status_messages(current_session)
