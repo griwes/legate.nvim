@@ -165,6 +165,9 @@ function M.raw_mcp_tool_name(raw_input)
         or M.non_empty_string(raw_input.server_name)
         or M.non_empty_string(raw_input.server)
     if tool_name ~= nil then
+        if server_name ~= nil and vim.startswith(tool_name, server_name .. '/') then
+            tool_name = tool_name:sub(#server_name + 2)
+        end
         if server_name ~= nil and not vim.startswith(tool_name, server_name .. '/') then
             return string.format('%s/%s', server_name, tool_name)
         end

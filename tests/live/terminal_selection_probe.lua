@@ -128,6 +128,37 @@ local function mcp_terminal_tool_calls(server_name, tool_calls)
     return names
 end
 
+---@param server_name string
+---@param tool_calls legate.ToolCallState[]
+---@return table[]
+local function split_routing_violations(server_name, tool_calls)
+    local violations = {}
+
+    for _, tool_call in ipairs(tool_calls) do
+        if type(tool_call.raw_input) == 'table' then
+            local raw = tool_call.raw_input
+            local routed_server = raw.server or raw.serverName
+            local routed_tool = raw.tool or raw.toolName
+
+            if
+                type(routed_server) == 'string'
+                and type(routed_tool) == 'string'
+                and routed_server == server_name
+                and vim.startswith(routed_tool, server_name .. '/')
+            then
+                table.insert(violations, {
+                    id = tool_call.tool_call_id,
+                    routed_server = routed_server,
+                    routed_tool = routed_tool,
+                    expected_tool = routed_tool:sub(#server_name + 2),
+                })
+            end
+        end
+    end
+
+    return violations
+end
+
 ---@param tool_calls legate.ToolCallState[]
 ---@return integer
 local function execute_tool_call_count(tool_calls)
@@ -411,6 +442,7 @@ local ok, err = xpcall(function()
 
     local execute_calls = execute_tool_call_count(current_session.tool_calls)
     local mcp_terminal_calls = mcp_terminal_tool_calls(server_name, current_session.tool_calls)
+    local split_tool_routing_violations = split_routing_violations(server_name, current_session.tool_calls)
 
     assert(
         total_terminal_calls > 0 or #current_session.tool_calls > 0,
@@ -433,6 +465,7 @@ local ok, err = xpcall(function()
         execute_tool_call_count = execute_calls,
         terminal_calls = vim.deepcopy(terminal_counts),
         mcp_terminal_tool_calls = mcp_terminal_calls,
+        split_tool_routing_violations = split_tool_routing_violations,
         observed_mcp_requests = observed_mcp_requests,
         observed_rpc_requests = observed_rpc_requests,
         tool_calls = vim.tbl_map(tool_summary, current_session.tool_calls),
@@ -442,6 +475,7 @@ local ok, err = xpcall(function()
         message_count = #current_session.messages,
         assistant_text = assistant_text,
         probe_mode = requested_probe_mode(),
+        split_tool_routing_ok = #split_tool_routing_violations == 0,
     }))
 end, debug.traceback)
 

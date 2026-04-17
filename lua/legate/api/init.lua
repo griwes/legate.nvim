@@ -2,6 +2,7 @@ local approval_api = require('legate.api.approvals')
 local buffer = require('legate.ui.buffer')
 local configuration_api = require('legate.api.configuration')
 local formatters = require('legate.api.formatters')
+local guidance_registry = require('legate.guidance.registry')
 local pickers = require('legate.api.pickers')
 local prompt_api = require('legate.api.prompt')
 local session_api = require('legate.api.sessions')
@@ -251,12 +252,31 @@ function M.terminal_backend_name()
     return terminal.resolve().name
 end
 
+---@param owner string
+---@param provider string|fun(ctx: legate.GuidanceContext): string|string[]|nil
+---@param opts? table
+---@return boolean, string?
+function M.register_guidance_provider(owner, provider, opts)
+    return guidance_registry.register(owner, provider, opts)
+end
+
+---@param owner string
+function M.unregister_guidance_provider(owner)
+    guidance_registry.unregister(owner)
+end
+
+---@return legate.GuidanceRegistration[]
+function M.guidance_providers()
+    return guidance_registry.list()
+end
+
 ---Reset all in-memory ACP state.
 function M.clear()
     transport.clear()
     terminal.clear()
     continuity.clear()
     buffer.clear()
+    guidance_registry.clear()
     config.reset()
 end
 

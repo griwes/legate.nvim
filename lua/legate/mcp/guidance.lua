@@ -34,13 +34,34 @@ local function supports_mcp_family(agent_capabilities, family)
     return has_enabled_capability(agent_capabilities.mcpCapabilities[family])
 end
 
+---@param agent_capabilities? legate.AgentCapabilities
+---@return boolean
+local function has_any_mcp_capability(agent_capabilities)
+    if agent_capabilities == nil or type(agent_capabilities.mcpCapabilities) ~= 'table' then
+        return false
+    end
+
+    return has_enabled_capability(agent_capabilities.mcpCapabilities)
+end
+
+---@return table|nil
+local function load_ministry()
+    local ok, ministry = pcall(require, 'ministry')
+    return ok and ministry or nil
+end
+
 ---@class legate.McpGuidanceSurface
 ---@field has_resources boolean
 ---@field has_workspace_summary boolean
 ---@field has_terminals_summary boolean
+---@field has_tasks_summary boolean
+---@field has_dap_summary boolean
+---@field has_dap_breakpoints boolean
+---@field has_dap_threads boolean
 ---@field has_any_tools boolean
 ---@field has_any_editor_tools boolean
 ---@field has_any_terminal_tools boolean
+---@field has_any_dap_tools boolean
 ---@field has_list_buffers boolean
 ---@field has_read_buffer boolean
 ---@field has_write_buffer boolean
@@ -53,6 +74,16 @@ end
 ---@field has_terminal_output boolean
 ---@field has_terminal_wait boolean
 ---@field has_terminal_release boolean
+---@field has_dap_continue boolean
+---@field has_dap_pause boolean
+---@field has_dap_step_over boolean
+---@field has_dap_step_into boolean
+---@field has_dap_step_out boolean
+---@field has_dap_terminate boolean
+---@field has_dap_disconnect boolean
+---@field has_dap_stack_template boolean
+---@field has_dap_scopes_template boolean
+---@field has_dap_variables_template boolean
 
 ---@param values string[]
 ---@return string
@@ -65,16 +96,22 @@ local function quoted_list(values)
     )
 end
 
+---@param ministry table
 ---@param server_name string
 ---@return legate.McpGuidanceSurface
-local function available_surface(server_name)
+local function available_surface(ministry, server_name)
     local surface = {
         has_resources = false,
         has_workspace_summary = false,
         has_terminals_summary = false,
+        has_tasks_summary = false,
+        has_dap_summary = false,
+        has_dap_breakpoints = false,
+        has_dap_threads = false,
         has_any_tools = false,
         has_any_editor_tools = false,
         has_any_terminal_tools = false,
+        has_any_dap_tools = false,
         has_list_buffers = false,
         has_read_buffer = false,
         has_write_buffer = false,
@@ -87,10 +124,18 @@ local function available_surface(server_name)
         has_terminal_output = false,
         has_terminal_wait = false,
         has_terminal_release = false,
+        has_dap_continue = false,
+        has_dap_pause = false,
+        has_dap_step_over = false,
+        has_dap_step_into = false,
+        has_dap_step_out = false,
+        has_dap_terminate = false,
+        has_dap_disconnect = false,
+        has_dap_stack_template = false,
+        has_dap_scopes_template = false,
+        has_dap_variables_template = false,
     }
-    local ok, ministry = pcall(require, 'ministry')
-
-    if not ok then
+    if ministry == nil then
         return surface
     end
 
@@ -102,6 +147,33 @@ local function available_surface(server_name)
             elseif resource.namespaced_uri == string.format('%s/terminals://list', server_name) then
                 surface.has_resources = true
                 surface.has_terminals_summary = true
+            elseif resource.namespaced_uri == string.format('%s/tasks://summary', server_name) then
+                surface.has_resources = true
+                surface.has_tasks_summary = true
+            elseif resource.namespaced_uri == string.format('%s/dap://summary', server_name) then
+                surface.has_resources = true
+                surface.has_dap_summary = true
+            elseif resource.namespaced_uri == string.format('%s/dap://breakpoints', server_name) then
+                surface.has_resources = true
+                surface.has_dap_breakpoints = true
+            elseif resource.namespaced_uri == string.format('%s/dap://threads', server_name) then
+                surface.has_resources = true
+                surface.has_dap_threads = true
+            end
+        end
+    end
+
+    if type(ministry.list_resource_template_descriptors) == 'function' then
+        for _, resource_template in ipairs(ministry.list_resource_template_descriptors()) do
+            if resource_template.namespaced_uri_template == string.format('%s/dap://stack/{thread_id}', server_name) then
+                surface.has_dap_stack_template = true
+            elseif resource_template.namespaced_uri_template == string.format('%s/dap://scopes/{frame_id}', server_name) then
+                surface.has_dap_scopes_template = true
+            elseif
+                resource_template.namespaced_uri_template
+                == string.format('%s/dap://variables/{variables_reference}', server_name)
+            then
+                surface.has_dap_variables_template = true
             end
         end
     end
@@ -132,6 +204,20 @@ local function available_surface(server_name)
                 surface.has_terminal_wait = true
             elseif tool.namespaced_name == string.format('%s/terminal/release', server_name) then
                 surface.has_terminal_release = true
+            elseif tool.namespaced_name == string.format('%s/dap/continue', server_name) then
+                surface.has_dap_continue = true
+            elseif tool.namespaced_name == string.format('%s/dap/pause', server_name) then
+                surface.has_dap_pause = true
+            elseif tool.namespaced_name == string.format('%s/dap/step_over', server_name) then
+                surface.has_dap_step_over = true
+            elseif tool.namespaced_name == string.format('%s/dap/step_into', server_name) then
+                surface.has_dap_step_into = true
+            elseif tool.namespaced_name == string.format('%s/dap/step_out', server_name) then
+                surface.has_dap_step_out = true
+            elseif tool.namespaced_name == string.format('%s/dap/terminate', server_name) then
+                surface.has_dap_terminate = true
+            elseif tool.namespaced_name == string.format('%s/dap/disconnect', server_name) then
+                surface.has_dap_disconnect = true
             end
         end
     end
@@ -148,7 +234,14 @@ local function available_surface(server_name)
         or surface.has_terminal_output
         or surface.has_terminal_wait
         or surface.has_terminal_release
-    surface.has_any_tools = surface.has_any_editor_tools or surface.has_any_terminal_tools
+    surface.has_any_dap_tools = surface.has_dap_continue
+        or surface.has_dap_pause
+        or surface.has_dap_step_over
+        or surface.has_dap_step_into
+        or surface.has_dap_step_out
+        or surface.has_dap_terminate
+        or surface.has_dap_disconnect
+    surface.has_any_tools = surface.has_any_editor_tools or surface.has_any_terminal_tools or surface.has_any_dap_tools
 
     return surface
 end
@@ -159,7 +252,7 @@ end
 local function guidance_for(server_name, agent_capabilities)
     local has_resource_capabilities = supports_mcp_family(agent_capabilities, 'resources')
     local has_tool_capabilities = supports_mcp_family(agent_capabilities, 'tools')
-    local surface = available_surface(server_name)
+    local surface = available_surface(load_ministry(), server_name)
     local lines = {
         'Routing guidance:',
         string.format('- Prefer the injected MCP server `%s` for editor work.', server_name),
@@ -174,11 +267,38 @@ local function guidance_for(server_name, agent_capabilities)
                 server_name
             )
         )
-        if surface.has_any_editor_tools and surface.has_any_terminal_tools then
+        if surface.has_any_editor_tools and surface.has_any_terminal_tools and surface.has_any_dap_tools then
+            table.insert(
+                lines,
+                string.format(
+                    '- When the tool call surface separates server selection from tool selection, choose MCP server `%s` and then tool path `editor/...`, `terminal/...`, or `dap/...` without repeating the `%s/` prefix inside the tool-path field.',
+                    server_name,
+                    server_name
+                )
+            )
+        elseif surface.has_any_editor_tools and surface.has_any_terminal_tools then
             table.insert(
                 lines,
                 string.format(
                     '- When the tool call surface separates server selection from tool selection, choose MCP server `%s` and then tool path `editor/...` or `terminal/...` without repeating the `%s/` prefix inside the tool-path field.',
+                    server_name,
+                    server_name
+                )
+            )
+        elseif surface.has_any_editor_tools and surface.has_any_dap_tools then
+            table.insert(
+                lines,
+                string.format(
+                    '- When the tool call surface separates server selection from tool selection, choose MCP server `%s` and then tool path `editor/...` or `dap/...` without repeating the `%s/` prefix inside the tool-path field.',
+                    server_name,
+                    server_name
+                )
+            )
+        elseif surface.has_any_terminal_tools and surface.has_any_dap_tools then
+            table.insert(
+                lines,
+                string.format(
+                    '- When the tool call surface separates server selection from tool selection, choose MCP server `%s` and then tool path `terminal/...` or `dap/...` without repeating the `%s/` prefix inside the tool-path field.',
                     server_name,
                     server_name
                 )
@@ -197,6 +317,15 @@ local function guidance_for(server_name, agent_capabilities)
                 lines,
                 string.format(
                     '- When the tool call surface separates server selection from tool selection, choose MCP server `%s` and then tool path `terminal/...` without repeating the `%s/` prefix inside the tool-path field.',
+                    server_name,
+                    server_name
+                )
+            )
+        elseif surface.has_any_dap_tools then
+            table.insert(
+                lines,
+                string.format(
+                    '- When the tool call surface separates server selection from tool selection, choose MCP server `%s` and then tool path `dap/...` without repeating the `%s/` prefix inside the tool-path field.',
                     server_name,
                     server_name
                 )
@@ -307,6 +436,59 @@ local function guidance_for(server_name, agent_capabilities)
         )
     end
 
+    if has_resource_capabilities and surface.has_tasks_summary then
+        table.insert(
+            lines,
+            string.format(
+                '- For task/build orientation, prefer `%s/tasks://summary` before inventing shell-only workflows; it exposes current generic Overseer task state, including actively running tasks when available.',
+                server_name
+            )
+        )
+    end
+
+    if has_resource_capabilities and (surface.has_dap_summary or surface.has_dap_breakpoints or surface.has_dap_threads) then
+        local dap_resources = {}
+
+        if surface.has_dap_summary then
+            table.insert(dap_resources, string.format('%s/dap://summary', server_name))
+        end
+        if surface.has_dap_breakpoints then
+            table.insert(dap_resources, string.format('%s/dap://breakpoints', server_name))
+        end
+        if surface.has_dap_threads then
+            table.insert(dap_resources, string.format('%s/dap://threads', server_name))
+        end
+
+        table.insert(
+            lines,
+            string.format(
+                '- When debugging through `dap.nvim`, prefer the MCP debugger resources for live debugger state, such as %s.',
+                quoted_list(dap_resources)
+            )
+        )
+    end
+
+    if has_resource_capabilities and (surface.has_dap_stack_template or surface.has_dap_scopes_template) then
+        local dap_templates = {}
+        if surface.has_dap_stack_template then
+            table.insert(dap_templates, string.format('%s/dap://stack/{thread_id}', server_name))
+        end
+        if surface.has_dap_scopes_template then
+            table.insert(dap_templates, string.format('%s/dap://scopes/{frame_id}', server_name))
+        end
+        if surface.has_dap_variables_template then
+            table.insert(dap_templates, string.format('%s/dap://variables/{variables_reference}', server_name))
+        end
+
+        table.insert(
+            lines,
+            string.format(
+                '- After reading debugger threads or the current frame, follow the DAP resource-template flow for deeper inspection using %s.',
+                quoted_list(dap_templates)
+            )
+        )
+    end
+
     if has_tool_capabilities and surface.has_any_terminal_tools then
         local terminal_tools = {}
 
@@ -343,6 +525,40 @@ local function guidance_for(server_name, agent_capabilities)
         )
     end
 
+    if has_tool_capabilities and surface.has_any_dap_tools then
+        local dap_tools = {}
+
+        if surface.has_dap_continue then
+            table.insert(dap_tools, string.format('%s/dap/continue', server_name))
+        end
+        if surface.has_dap_pause then
+            table.insert(dap_tools, string.format('%s/dap/pause', server_name))
+        end
+        if surface.has_dap_step_over then
+            table.insert(dap_tools, string.format('%s/dap/step_over', server_name))
+        end
+        if surface.has_dap_step_into then
+            table.insert(dap_tools, string.format('%s/dap/step_into', server_name))
+        end
+        if surface.has_dap_step_out then
+            table.insert(dap_tools, string.format('%s/dap/step_out', server_name))
+        end
+        if surface.has_dap_terminate then
+            table.insert(dap_tools, string.format('%s/dap/terminate', server_name))
+        end
+        if surface.has_dap_disconnect then
+            table.insert(dap_tools, string.format('%s/dap/disconnect', server_name))
+        end
+
+        table.insert(
+            lines,
+            string.format(
+                '- Treat debugger control as MCP tool calls, using the surfaced `dap/...` tools for continue, pause, step, and stop operations such as %s.',
+                quoted_list(dap_tools)
+            )
+        )
+    end
+
     if #lines <= 3 then
         return nil
     end
@@ -350,17 +566,77 @@ local function guidance_for(server_name, agent_capabilities)
     return table.concat(lines, '\n')
 end
 
+---@param ministry table|nil
+---@param current_session? legate.Session
+---@param agent_capabilities? legate.AgentCapabilities
+---@return table[]
+local function forwarded_server_guidance(ministry, current_session, agent_capabilities)
+    if ministry == nil then
+        return {}
+    end
+
+    local blocks = {}
+    local seen = {}
+    local known_guidance = {}
+    local context = {
+        consumer = 'legate',
+        session = current_session,
+        agent_capabilities = agent_capabilities,
+    }
+
+    if type(ministry.list_server_guidance) == 'function' then
+        for _, descriptor in ipairs(ministry.list_server_guidance(context) or {}) do
+            if
+                type(descriptor) == 'table'
+                and type(descriptor.server) == 'string'
+                and type(descriptor.guidance) == 'string'
+                and descriptor.guidance ~= ''
+            then
+                known_guidance[descriptor.server] = descriptor.guidance
+            end
+        end
+    end
+
+    for _, server in ipairs(runtime.effective_servers(current_session, { passive = true })) do
+        local server_name = type(server) == 'table' and server.name or nil
+
+        if type(server_name) == 'string' and server_name ~= '' and not seen[server_name] then
+            seen[server_name] = true
+
+            local guidance = known_guidance[server_name]
+
+            if guidance == nil and next(known_guidance) == nil and type(ministry.server_guidance) == 'function' then
+                local ok, value = pcall(ministry.server_guidance, server_name, context)
+                if ok and type(value) == 'string' and value ~= '' then
+                    guidance = value
+                end
+            end
+
+            if type(guidance) == 'string' and guidance ~= '' then
+                table.insert(
+                    blocks,
+                    string.format('Additional guidance for MCP server `%s`:\n%s', server_name, guidance)
+                )
+            end
+        end
+    end
+
+    return blocks
+end
+
 function M.prepend(prompt, agent_capabilities, current_session)
     local adapter = config.adapter_for_session(current_session)
 
-    if not adapter.mcp_nvim_guidance then
+    if not adapter.mcp_nvim_guidance or not has_any_mcp_capability(agent_capabilities) then
         return prompt
     end
 
+    local ministry = load_ministry()
     local injected_server_name = runtime.injected_server_name and runtime.injected_server_name() or 'neovim'
     local server_name = nil
+    local effective_servers = runtime.effective_servers(current_session, { passive = true })
 
-    for _, server in ipairs(runtime.effective_servers(current_session, { passive = true })) do
+    for _, server in ipairs(effective_servers) do
         if server.name == injected_server_name then
             server_name = server.name
             break
@@ -371,17 +647,62 @@ function M.prepend(prompt, agent_capabilities, current_session)
         return prompt
     end
 
-    local guidance = guidance_for(server_name, agent_capabilities)
+    local blocks = {}
+    local base_guidance = guidance_for(server_name, agent_capabilities)
+    if base_guidance ~= nil then
+        table.insert(blocks, base_guidance)
+    end
 
-    if guidance == nil then
+    vim.list_extend(blocks, forwarded_server_guidance(ministry, current_session, agent_capabilities))
+
+    if #blocks == 0 then
         return prompt
     end
+
+    local guidance = table.concat(blocks, '\n\n')
 
     if vim.startswith(prompt, guidance) then
         return prompt
     end
 
     return string.format('%s\n\n%s', guidance, prompt)
+end
+
+---@param current_session? legate.Session
+---@param agent_capabilities? legate.AgentCapabilities
+---@return string|nil
+function M.guidance(current_session, agent_capabilities)
+    local adapter = config.adapter_for_session(current_session)
+
+    if not adapter.mcp_nvim_guidance or not has_any_mcp_capability(agent_capabilities) then
+        return nil
+    end
+
+    local ministry = load_ministry()
+    local injected_server_name = runtime.injected_server_name and runtime.injected_server_name() or 'neovim'
+    local server_name = nil
+    local effective_servers = runtime.effective_servers(current_session, { passive = true })
+
+    for _, server in ipairs(effective_servers) do
+        if server.name == injected_server_name then
+            server_name = server.name
+            break
+        end
+    end
+
+    if server_name == nil then
+        return nil
+    end
+
+    local blocks = {}
+    local base_guidance = guidance_for(server_name, agent_capabilities)
+    if base_guidance ~= nil then
+        table.insert(blocks, base_guidance)
+    end
+
+    vim.list_extend(blocks, forwarded_server_guidance(ministry, current_session, agent_capabilities))
+
+    return #blocks > 0 and table.concat(blocks, '\n\n') or nil
 end
 
 return M

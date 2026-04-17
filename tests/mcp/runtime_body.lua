@@ -1100,6 +1100,166 @@ it('prepends terminal-summary guidance only when MCP resources are enabled and s
     assert.is_false(prompt:find('tool path `terminal/...`', 1, true) ~= nil)
 end)
 
+it('prepends task-summary guidance only when generic task resources are enabled and surfaced', function()
+    local original_mcp = package.loaded['ministry']
+
+    package.loaded['ministry'] = {
+        start_all = function()
+            return true
+        end,
+        list_resource_descriptors = function()
+            return {
+                {
+                    namespaced_uri = 'neovim/tasks://summary',
+                },
+            }
+        end,
+        http_endpoint = function()
+            return nil
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_nvim_guidance = true,
+        mcp_servers = {},
+    })
+
+    package.loaded['legate.mcp.runtime'] = nil
+    package.loaded['legate.mcp.guidance'] = nil
+    local guidance = require('legate.mcp.guidance')
+    local prompt = guidance.prepend('hello', {
+        mcpCapabilities = {
+            resources = {
+                listChanged = true,
+            },
+        },
+    })
+
+    package.loaded['ministry'] = original_mcp
+
+    assert.is_true(prompt:find('neovim/tasks://summary', 1, true) ~= nil)
+    assert.is_false(prompt:find('neovim/terminals://list', 1, true) ~= nil)
+    assert.is_false(prompt:find('neovim/workspace://summary', 1, true) ~= nil)
+end)
+
+it('prepends DAP resource guidance only when debugger resources and templates are surfaced', function()
+    local original_mcp = package.loaded['ministry']
+
+    package.loaded['ministry'] = {
+        start_all = function()
+            return true
+        end,
+        list_resource_descriptors = function()
+            return {
+                { namespaced_uri = 'neovim/dap://summary' },
+                { namespaced_uri = 'neovim/dap://breakpoints' },
+                { namespaced_uri = 'neovim/dap://threads' },
+            }
+        end,
+        list_resource_template_descriptors = function()
+            return {
+                { namespaced_uri_template = 'neovim/dap://stack/{thread_id}' },
+                { namespaced_uri_template = 'neovim/dap://scopes/{frame_id}' },
+                { namespaced_uri_template = 'neovim/dap://variables/{variables_reference}' },
+            }
+        end,
+        http_endpoint = function()
+            return nil
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_nvim_guidance = true,
+        mcp_servers = {},
+    })
+
+    package.loaded['legate.mcp.runtime'] = nil
+    package.loaded['legate.mcp.guidance'] = nil
+    local guidance = require('legate.mcp.guidance')
+    local prompt = guidance.prepend('hello', {
+        mcpCapabilities = {
+            resources = {
+                listChanged = true,
+            },
+        },
+    })
+
+    package.loaded['ministry'] = original_mcp
+
+    assert.is_true(prompt:find('neovim/dap://summary', 1, true) ~= nil)
+    assert.is_true(prompt:find('neovim/dap://breakpoints', 1, true) ~= nil)
+    assert.is_true(prompt:find('neovim/dap://threads', 1, true) ~= nil)
+    assert.is_true(prompt:find('neovim/dap://stack/{thread_id}', 1, true) ~= nil)
+    assert.is_true(prompt:find('neovim/dap://scopes/{frame_id}', 1, true) ~= nil)
+    assert.is_true(prompt:find('neovim/dap://variables/{variables_reference}', 1, true) ~= nil)
+end)
+
+it('prepends DAP tool guidance only when debugger tools are surfaced', function()
+    local original_mcp = package.loaded['ministry']
+
+    package.loaded['ministry'] = {
+        start_all = function()
+            return true
+        end,
+        list_tool_descriptors = function()
+            return {
+                { namespaced_name = 'neovim/dap/continue' },
+                { namespaced_name = 'neovim/dap/pause' },
+                { namespaced_name = 'neovim/dap/step_over' },
+                { namespaced_name = 'neovim/dap/terminate' },
+            }
+        end,
+        http_endpoint = function()
+            return nil
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_nvim_guidance = true,
+        mcp_servers = {},
+    })
+
+    package.loaded['legate.mcp.runtime'] = nil
+    package.loaded['legate.mcp.guidance'] = nil
+    local guidance = require('legate.mcp.guidance')
+    local prompt = guidance.prepend('hello', {
+        mcpCapabilities = {
+            tools = {
+                listChanged = true,
+            },
+        },
+    })
+
+    package.loaded['ministry'] = original_mcp
+
+    assert.is_true(prompt:find('tool path `dap/...`', 1, true) ~= nil)
+    assert.is_true(prompt:find('neovim/dap/continue', 1, true) ~= nil)
+    assert.is_true(prompt:find('neovim/dap/pause', 1, true) ~= nil)
+    assert.is_true(prompt:find('neovim/dap/step_over', 1, true) ~= nil)
+    assert.is_true(prompt:find('neovim/dap/terminate', 1, true) ~= nil)
+end)
+
 it('does not advertise terminal fallback guidance when ministry terminal tools are not surfaced', function()
     local original_mcp = package.loaded['ministry']
 
@@ -1278,6 +1438,85 @@ it('does not advertise unsurfaced terminal names when only partial terminal tool
     assert.is_true(prompt:find('tool path `terminal/...`', 1, true) ~= nil)
 end)
 
+it('explains split server/tool MCP routing for terminal fallback guidance', function()
+    local original_mcp = package.loaded['ministry']
+
+    package.loaded['ministry'] = {
+        start_all = function()
+            return true
+        end,
+        list_tool_descriptors = function()
+            return {
+                {
+                    namespaced_name = 'neovim/terminal/create',
+                },
+                {
+                    namespaced_name = 'neovim/terminal/output',
+                },
+                {
+                    namespaced_name = 'neovim/terminal/wait',
+                },
+                {
+                    namespaced_name = 'neovim/terminal/release',
+                },
+            }
+        end,
+        http_endpoint = function()
+            return nil
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_nvim_guidance = true,
+        mcp_servers = {},
+    })
+
+    package.loaded['legate.mcp.runtime'] = nil
+    package.loaded['legate.mcp.guidance'] = nil
+    local guidance = require('legate.mcp.guidance')
+    local prompt = guidance.prepend('hello', {
+        mcpCapabilities = {
+            tools = {
+                listChanged = true,
+            },
+        },
+    })
+
+    package.loaded['ministry'] = original_mcp
+
+    assert.is_true(
+        prompt:find('Use fully qualified MCP tool names exactly as advertised by `tools/list`', 1, true) ~= nil
+    )
+    assert.is_true(
+        prompt:find(
+            'choose MCP server `neovim` and then tool path `terminal/...` without repeating the `neovim/` prefix inside the tool-path field',
+            1,
+            true
+        ) ~= nil
+    )
+    assert.is_true(
+        prompt:find(
+            'Do not execute shell commands through a generic execute tool when ACP terminal methods or `neovim/terminal/*` are available for the task.',
+            1,
+            true
+        ) ~= nil
+    )
+    assert.is_true(
+        prompt:find(
+            'If you still choose a non-terminal execution path, explicitly explain why the required terminal channels were unavailable before proceeding.',
+            1,
+            true
+        ) ~= nil
+    )
+end)
+
 it('skips MCP guidance when the agent does not advertise MCP capabilities', function()
     local original_mcp = package.loaded['ministry']
 
@@ -1314,6 +1553,399 @@ it('skips MCP guidance when the agent does not advertise MCP capabilities', func
     package.loaded['ministry'] = original_mcp
 
     assert.are.equal('hello', prompt)
+end)
+
+it('prepends forwarded Ministry server guidance in effective server order', function()
+    local original_mcp = package.loaded['ministry']
+
+    package.loaded['ministry'] = {
+        start_all = function()
+            return true
+        end,
+        list_resource_descriptors = function()
+            return {}
+        end,
+        list_tool_descriptors = function()
+            return {}
+        end,
+        server_guidance = function(server_name)
+            if server_name == 'neovim' then
+                return 'NEOVIM GUIDANCE'
+            end
+            if server_name == 'custom' then
+                return 'CUSTOM GUIDANCE'
+            end
+            return nil
+        end,
+        http_endpoint = function()
+            return nil
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_nvim_guidance = true,
+        mcp_servers = {
+            {
+                name = 'custom',
+                type = 'stdio',
+                command = 'custom-mcp',
+            },
+            {
+                name = 'unused',
+                type = 'stdio',
+                command = 'unused-mcp',
+            },
+        },
+    })
+
+    package.loaded['legate.mcp.runtime'] = nil
+    package.loaded['legate.mcp.guidance'] = nil
+    local guidance = require('legate.mcp.guidance')
+    local prompt = guidance.prepend('hello', {
+        mcpCapabilities = {
+            tools = {
+                listChanged = true,
+            },
+        },
+    })
+
+    package.loaded['ministry'] = original_mcp
+
+    assert.are.equal(
+        'Additional guidance for MCP server `neovim`:\nNEOVIM GUIDANCE\n\n'
+            .. 'Additional guidance for MCP server `custom`:\nCUSTOM GUIDANCE\n\nhello',
+        prompt
+    )
+end)
+
+it('skips forwarded guidance lookups for effective servers that Ministry does not own', function()
+    local original_mcp = package.loaded['ministry']
+
+    package.loaded['ministry'] = {
+        start_all = function()
+            return true
+        end,
+        list_resource_descriptors = function()
+            return {}
+        end,
+        list_tool_descriptors = function()
+            return {}
+        end,
+        list_server_guidance = function()
+            return {
+                {
+                    server = 'neovim',
+                    guidance = 'NEOVIM GUIDANCE',
+                },
+            }
+        end,
+        server_guidance = function(server_name)
+            error('unknown:' .. server_name)
+        end,
+        http_endpoint = function()
+            return nil
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_nvim_guidance = true,
+        mcp_servers = {
+            {
+                name = 'custom',
+                type = 'stdio',
+                command = 'custom-mcp',
+            },
+        },
+    })
+
+    package.loaded['legate.mcp.runtime'] = nil
+    package.loaded['legate.mcp.guidance'] = nil
+    local guidance = require('legate.mcp.guidance')
+    local prompt = guidance.prepend('hello', {
+        mcpCapabilities = {
+            tools = {
+                listChanged = true,
+            },
+        },
+    })
+
+    package.loaded['ministry'] = original_mcp
+
+    assert.are.equal('Additional guidance for MCP server `neovim`:\nNEOVIM GUIDANCE\n\nhello', prompt)
+end)
+
+it('prepends registered guidance providers in deterministic order', function()
+    local original_mcp = package.loaded['ministry']
+    package.loaded['ministry'] = nil
+
+    plugin.setup({
+        enable_mcp_nvim = false,
+        mcp_nvim_guidance = false,
+    })
+
+    package.loaded['legate.guidance.registry'] = nil
+    package.loaded['legate.core.prompt_pipeline'] = nil
+    package.loaded['legate.api'] = nil
+
+    local api = require('legate.api')
+    local prompt_pipeline = require('legate.core.prompt_pipeline')
+
+    local ok_alpha = api.register_guidance_provider('alpha', function()
+        return 'ALPHA GUIDANCE'
+    end, { priority = 10 })
+    local ok_zeta = api.register_guidance_provider('zeta', 'ZETA GUIDANCE', { priority = 20 })
+
+    package.loaded['ministry'] = original_mcp
+
+    assert.is_true(ok_alpha)
+    assert.is_true(ok_zeta)
+
+    local prompt = prompt_pipeline.decorate('hello', nil, nil)
+
+    assert.are.equal('ALPHA GUIDANCE\n\nZETA GUIDANCE\n\nhello', prompt)
+end)
+
+it('composes forwarded Ministry server guidance before plugin-registered guidance', function()
+    local original_mcp = package.loaded['ministry']
+    package.loaded['ministry'] = {
+        start_all = function()
+            return true
+        end,
+        list_resource_descriptors = function()
+            return {}
+        end,
+        list_tool_descriptors = function()
+            return {}
+        end,
+        server_guidance = function(server_name)
+            if server_name == 'neovim' then
+                return 'NEOVIM GUIDANCE'
+            end
+            return nil
+        end,
+        http_endpoint = function()
+            return nil
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_nvim_guidance = true,
+    })
+
+    package.loaded['legate.guidance.registry'] = nil
+    package.loaded['legate.mcp.runtime'] = nil
+    package.loaded['legate.mcp.guidance'] = nil
+    package.loaded['legate.core.prompt_pipeline'] = nil
+    package.loaded['legate.api'] = nil
+
+    local api = require('legate.api')
+    local prompt_pipeline = require('legate.core.prompt_pipeline')
+
+    api.register_guidance_provider('alpha', 'PLUGIN GUIDANCE', { priority = 10 })
+
+    local prompt = prompt_pipeline.decorate('hello', {
+        mcpCapabilities = {
+            tools = {
+                listChanged = true,
+            },
+        },
+    }, nil)
+
+    package.loaded['ministry'] = original_mcp
+
+    assert.are.equal(
+        'Additional guidance for MCP server `neovim`:\nNEOVIM GUIDANCE\n\nPLUGIN GUIDANCE\n\nhello',
+        prompt
+    )
+end)
+
+it('gates registered guidance providers on required MCP capability families', function()
+    local original_mcp = package.loaded['ministry']
+    package.loaded['ministry'] = nil
+
+    plugin.setup({
+        enable_mcp_nvim = false,
+        mcp_nvim_guidance = false,
+    })
+
+    package.loaded['legate.guidance.registry'] = nil
+    package.loaded['legate.core.prompt_pipeline'] = nil
+    package.loaded['legate.api'] = nil
+
+    local api = require('legate.api')
+    local prompt_pipeline = require('legate.core.prompt_pipeline')
+
+    api.register_guidance_provider('always', 'ALWAYS GUIDANCE', { priority = 10 })
+    api.register_guidance_provider('tools_only', 'TOOLS GUIDANCE', {
+        priority = 20,
+        requires_mcp_families = { 'tools' },
+    })
+
+    local without_tools = prompt_pipeline.decorate('hello', {
+        mcpCapabilities = {
+            resources = {
+                listChanged = true,
+            },
+        },
+    }, nil)
+
+    local with_tools = prompt_pipeline.decorate('hello', {
+        mcpCapabilities = {
+            tools = {
+                listChanged = true,
+            },
+        },
+    }, nil)
+
+    package.loaded['ministry'] = original_mcp
+
+    assert.are.equal('ALWAYS GUIDANCE\n\nhello', without_tools)
+    assert.are.equal('ALWAYS GUIDANCE\n\nTOOLS GUIDANCE\n\nhello', with_tools)
+end)
+
+it('clears registered guidance providers through the public API reset path', function()
+    local original_mcp = package.loaded['ministry']
+    package.loaded['ministry'] = nil
+
+    plugin.setup({
+        enable_mcp_nvim = false,
+        mcp_nvim_guidance = false,
+    })
+
+    package.loaded['legate.guidance.registry'] = nil
+    package.loaded['legate.core.prompt_pipeline'] = nil
+    package.loaded['legate.api'] = nil
+
+    local api = require('legate.api')
+    local prompt_pipeline = require('legate.core.prompt_pipeline')
+
+    api.register_guidance_provider('alpha', 'ALPHA GUIDANCE')
+    assert.are.equal(1, #api.guidance_providers())
+    assert.are.equal('ALPHA GUIDANCE\n\nhello', prompt_pipeline.decorate('hello', nil, nil))
+
+    api.clear()
+
+    assert.are.equal(0, #api.guidance_providers())
+    assert.are.equal('hello', prompt_pipeline.decorate('hello', nil, nil))
+    package.loaded['ministry'] = original_mcp
+end)
+
+it('does not duplicate guidance on repeated decoration when ministry and plugin guidance both apply', function()
+    local original_mcp = package.loaded['ministry']
+
+    package.loaded['ministry'] = {
+        start_all = function()
+            return true
+        end,
+        list_tool_descriptors = function()
+            return {
+                {
+                    namespaced_name = 'neovim/editor/list_buffers',
+                },
+            }
+        end,
+        list_resource_descriptors = function()
+            return {}
+        end,
+        list_server_guidance = function()
+            return {
+                {
+                    server = 'neovim',
+                    guidance = 'SERVER GUIDANCE',
+                },
+            }
+        end,
+        http_endpoint = function()
+            return nil
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_nvim_guidance = true,
+        mcp_servers = {},
+    })
+
+    package.loaded['legate.guidance.registry'] = nil
+    package.loaded['legate.mcp.runtime'] = nil
+    package.loaded['legate.mcp.guidance'] = nil
+    package.loaded['legate.core.prompt_pipeline'] = nil
+    package.loaded['legate.api'] = nil
+
+    local api = require('legate.api')
+    local prompt_pipeline = require('legate.core.prompt_pipeline')
+
+    api.register_guidance_provider('alpha', 'ALPHA GUIDANCE', { priority = 10 })
+
+    local once = prompt_pipeline.decorate('hello', {
+        mcpCapabilities = {
+            tools = {
+                listChanged = true,
+            },
+        },
+    }, nil)
+    local twice = prompt_pipeline.decorate(once, {
+        mcpCapabilities = {
+            tools = {
+                listChanged = true,
+            },
+        },
+    }, nil)
+
+    package.loaded['ministry'] = original_mcp
+
+    assert.are.equal(once, twice)
+end)
+
+it('unregisters guidance providers through the public API', function()
+    local original_mcp = package.loaded['ministry']
+    package.loaded['ministry'] = nil
+
+    plugin.setup({
+        enable_mcp_nvim = false,
+        mcp_nvim_guidance = false,
+    })
+
+    package.loaded['legate.guidance.registry'] = nil
+    package.loaded['legate.core.prompt_pipeline'] = nil
+    package.loaded['legate.api'] = nil
+
+    local api = require('legate.api')
+    local prompt_pipeline = require('legate.core.prompt_pipeline')
+
+    api.register_guidance_provider('alpha', 'ALPHA GUIDANCE')
+    api.unregister_guidance_provider('alpha')
+
+    assert.are.equal(0, #api.guidance_providers())
+    assert.are.equal('hello', prompt_pipeline.decorate('hello', nil, nil))
+    package.loaded['ministry'] = original_mcp
 end)
 
 it('responds to permission requests with the configured default option', function()
@@ -1413,6 +2045,58 @@ it('auto-approves injected neovim terminal MCP permissions in default mode', fun
     assert.are.equal('default', approvals[1].source)
     assert.are.equal('Allow once', approvals[1].selected_option_name)
     assert.is_true(vim.tbl_contains(lines, '✓ Approval [1] Tool: neovim/neovim/terminal/create'))
+end)
+
+it('auto-approves injected neovim terminal MCP permissions when the tool field is already normalized', function()
+    local bufnr = api.open_chat()
+    api.set_prompt('need normalized terminal permission')
+    api.submit_prompt()
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'tool_call',
+            toolCallId = 'call_terminal_2',
+            title = 'Tool: neovim/terminal/create',
+            status = 'pending',
+            kind = 'execute',
+            rawInput = {
+                server = 'neovim',
+                tool = 'terminal/create',
+                arguments = {
+                    command = { 'printf', 'hi' },
+                },
+            },
+        },
+    })
+
+    local response = fake_client:emit_request('session/request_permission', {
+        sessionId = 'sess_123',
+        toolCall = {
+            toolCallId = 'call_terminal_2',
+        },
+        options = {
+            {
+                optionId = 'allow-once',
+                name = 'Allow once',
+                kind = 'allow_once',
+            },
+            {
+                optionId = 'reject-once',
+                name = 'Reject',
+                kind = 'reject_once',
+            },
+        },
+    })
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    local approvals = api.approvals()
+
+    assert.are.equal('selected', response.result.outcome.outcome)
+    assert.are.equal('allow-once', response.result.outcome.optionId)
+    assert.are.equal(1, #approvals)
+    assert.are.equal('default', approvals[1].source)
+    assert.are.equal('Allow once', approvals[1].selected_option_name)
+    assert.is_true(vim.tbl_contains(lines, '✓ Approval [1] Tool: neovim/terminal/create'))
 end)
 
 it('uses the configured permission policy hook before the default strategy', function()

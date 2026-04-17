@@ -55,11 +55,28 @@ local function raw_mcp_target(raw_input)
     return server_name, tool_name
 end
 
+---@param server_name string?
+---@param tool_name string?
+---@return string?, string?
+local function normalized_mcp_target(server_name, tool_name)
+    if type(server_name) ~= 'string' or type(tool_name) ~= 'string' then
+        return server_name, tool_name
+    end
+
+    local prefix = server_name .. '/'
+
+    if vim.startswith(tool_name, prefix) then
+        return server_name, tool_name:sub(#prefix + 1)
+    end
+
+    return server_name, tool_name
+end
+
 ---@param tool_call legate.ToolCallState?
 ---@param permission legate.PermissionRequest
 ---@return boolean
 local function is_injected_neovim_terminal_permission(tool_call, permission)
-    local server_name, tool_name = raw_mcp_target(tool_call and tool_call.raw_input or nil)
+    local server_name, tool_name = normalized_mcp_target(raw_mcp_target(tool_call and tool_call.raw_input or nil))
 
     if server_name == 'neovim' and type(tool_name) == 'string' and tool_name:match('(^|/)terminal/') ~= nil then
         return true
