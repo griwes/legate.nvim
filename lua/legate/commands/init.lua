@@ -295,6 +295,12 @@ function M.ensure()
         desc = 'Restore local Legate sessions from disk',
     })
 
+    create('LegateContinueLastSession', function()
+        api().continue_last_session()
+    end, {
+        desc = 'Restore if needed and open the most recently updated local Legate session',
+    })
+
     create('LegateClearSessionStorage', function()
         api().clear_session_storage()
     end, {

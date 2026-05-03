@@ -1149,6 +1149,179 @@ it('prepends task-summary guidance only when generic task resources are enabled 
     assert.is_false(prompt:find('neovim/workspace://summary', 1, true) ~= nil)
 end)
 
+it('prepends Git resource guidance only when repository resources are enabled and surfaced', function()
+    local original_mcp = package.loaded['ministry']
+
+    package.loaded['ministry'] = {
+        start_all = function()
+            return true
+        end,
+        list_resource_descriptors = function()
+            return {
+                { namespaced_uri = 'neovim/git://repository' },
+                { namespaced_uri = 'neovim/git://overview' },
+                { namespaced_uri = 'neovim/git://refs' },
+                { namespaced_uri = 'neovim/git://paths' },
+                { namespaced_uri = 'neovim/git://path' },
+            }
+        end,
+        http_endpoint = function()
+            return nil
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_nvim_guidance = true,
+        mcp_servers = {},
+    })
+
+    package.loaded['legate.mcp.runtime'] = nil
+    package.loaded['legate.mcp.guidance'] = nil
+    local guidance = require('legate.mcp.guidance')
+    local prompt = guidance.prepend('hello', {
+        mcpCapabilities = {
+            resources = {
+                listChanged = true,
+            },
+        },
+    })
+
+    package.loaded['ministry'] = original_mcp
+
+    assert.is_true(prompt:find('neovim/git://repository', 1, true) ~= nil)
+    assert.is_true(prompt:find('neovim/git://overview', 1, true) ~= nil)
+    assert.is_true(prompt:find('neovim/git://refs', 1, true) ~= nil)
+    assert.is_true(prompt:find('neovim/git://paths', 1, true) ~= nil)
+    assert.is_true(prompt:find('neovim/git://path', 1, true) ~= nil)
+    assert.is_true(prompt:find('before shelling out to `git`', 1, true) ~= nil)
+    assert.is_false(prompt:find('neovim/git/overview', 1, true) ~= nil)
+    assert.is_false(prompt:find('tool path `git/...`', 1, true) ~= nil)
+end)
+
+it('prepends Git tool guidance only when repository tools are enabled and surfaced', function()
+    local original_mcp = package.loaded['ministry']
+
+    package.loaded['ministry'] = {
+        start_all = function()
+            return true
+        end,
+        list_tool_descriptors = function()
+            return {
+                { namespaced_name = 'neovim/git/overview' },
+                { namespaced_name = 'neovim/git/list_refs' },
+                { namespaced_name = 'neovim/git/list_paths' },
+                { namespaced_name = 'neovim/git/path_state' },
+            }
+        end,
+        http_endpoint = function()
+            return nil
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_nvim_guidance = true,
+        mcp_servers = {},
+    })
+
+    package.loaded['legate.mcp.runtime'] = nil
+    package.loaded['legate.mcp.guidance'] = nil
+    local guidance = require('legate.mcp.guidance')
+    local prompt = guidance.prepend('hello', {
+        mcpCapabilities = {
+            tools = {
+                listChanged = true,
+            },
+        },
+    })
+
+    package.loaded['ministry'] = original_mcp
+
+    assert.is_true(prompt:find('tool path `git/...`', 1, true) ~= nil)
+    assert.is_true(prompt:find('neovim/git/overview', 1, true) ~= nil)
+    assert.is_true(prompt:find('neovim/git/list_refs', 1, true) ~= nil)
+    assert.is_true(prompt:find('neovim/git/list_paths', 1, true) ~= nil)
+    assert.is_true(prompt:find('neovim/git/path_state', 1, true) ~= nil)
+    assert.is_true(prompt:find('explicit-path repository questions', 1, true) ~= nil)
+    assert.is_false(prompt:find('neovim/git://overview', 1, true) ~= nil)
+    assert.is_false(prompt:find('before shelling out to `git`', 1, true) ~= nil)
+end)
+
+it('keeps Git resource and tool guidance separated by MCP capability family', function()
+    local original_mcp = package.loaded['ministry']
+
+    package.loaded['ministry'] = {
+        start_all = function()
+            return true
+        end,
+        list_resource_descriptors = function()
+            return {
+                { namespaced_uri = 'neovim/git://overview' },
+            }
+        end,
+        list_tool_descriptors = function()
+            return {
+                { namespaced_name = 'neovim/git/overview' },
+            }
+        end,
+        http_endpoint = function()
+            return nil
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_nvim_guidance = true,
+        mcp_servers = {},
+    })
+
+    package.loaded['legate.mcp.runtime'] = nil
+    package.loaded['legate.mcp.guidance'] = nil
+    local guidance = require('legate.mcp.guidance')
+    local resources_prompt = guidance.prepend('hello', {
+        mcpCapabilities = {
+            resources = {
+                listChanged = true,
+            },
+        },
+    })
+    local tools_prompt = guidance.prepend('hello', {
+        mcpCapabilities = {
+            tools = {
+                listChanged = true,
+            },
+        },
+    })
+
+    package.loaded['ministry'] = original_mcp
+
+    assert.is_true(resources_prompt:find('neovim/git://overview', 1, true) ~= nil)
+    assert.is_false(resources_prompt:find('neovim/git/overview', 1, true) ~= nil)
+    assert.is_false(resources_prompt:find('tool path `git/...`', 1, true) ~= nil)
+    assert.is_true(tools_prompt:find('neovim/git/overview', 1, true) ~= nil)
+    assert.is_true(tools_prompt:find('tool path `git/...`', 1, true) ~= nil)
+    assert.is_false(tools_prompt:find('neovim/git://overview', 1, true) ~= nil)
+end)
+
 it('prepends DAP resource guidance only when debugger resources and templates are surfaced', function()
     local original_mcp = package.loaded['ministry']
 
@@ -1515,6 +1688,64 @@ it('explains split server/tool MCP routing for terminal fallback guidance', func
             true
         ) ~= nil
     )
+end)
+
+it('explains split server/tool MCP routing across all surfaced tool groups', function()
+    local original_mcp = package.loaded['ministry']
+
+    package.loaded['ministry'] = {
+        start_all = function()
+            return true
+        end,
+        list_tool_descriptors = function()
+            return {
+                { namespaced_name = 'neovim/editor/list_buffers' },
+                { namespaced_name = 'neovim/terminal/create' },
+                { namespaced_name = 'neovim/git/overview' },
+                { namespaced_name = 'neovim/dap/continue' },
+            }
+        end,
+        http_endpoint = function()
+            return nil
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_nvim_guidance = true,
+        mcp_servers = {},
+    })
+
+    package.loaded['legate.mcp.runtime'] = nil
+    package.loaded['legate.mcp.guidance'] = nil
+    local guidance = require('legate.mcp.guidance')
+    local prompt = guidance.prepend('hello', {
+        mcpCapabilities = {
+            tools = {
+                listChanged = true,
+            },
+        },
+    })
+
+    package.loaded['ministry'] = original_mcp
+
+    assert.is_true(
+        prompt:find(
+            'choose MCP server `neovim` and then tool path `editor/...`, `terminal/...`, `git/...`, or `dap/...` without repeating the `neovim/` prefix inside the tool-path field',
+            1,
+            true
+        ) ~= nil
+    )
+    assert.is_true(prompt:find('neovim/editor/list_buffers', 1, true) ~= nil)
+    assert.is_true(prompt:find('neovim/terminal/create', 1, true) ~= nil)
+    assert.is_true(prompt:find('neovim/git/overview', 1, true) ~= nil)
+    assert.is_true(prompt:find('neovim/dap/continue', 1, true) ~= nil)
 end)
 
 it('skips MCP guidance when the agent does not advertise MCP capabilities', function()

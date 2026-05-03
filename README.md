@@ -101,6 +101,7 @@ Example local `lazy.nvim` spec:
 - explicit session loading is now user-facing too: unbound sessions bind through `session/new`, already-bound sessions reload through `session/load` when supported, failed explicit reloads mark the local session as `load_failed` and rerender the selected chat buffer with the sync error, and ACP refuses to steal the transport away from a different local session that still has a running turn
 - `load_failed` recovery is now explicit too: `:LegateLoadSession` retries the recorded remote session, while `:LegateRebindSession` creates a fresh remote ACP session for the same local transcript when retrying the stale binding is not enough
 - when `persist_sessions = true`, ACP writes local session state on `VimLeavePre`; `restore_sessions_on_setup = true` opts into restoring that local state during `setup()`
+- `:LegateContinueLastSession` restores local state when needed, selects the most recently updated local session, and opens the shared chat buffer without implicitly loading remote ACP state
 - prompt execution is still serialized globally for now; multiple local sessions are supported, but only one live prompt turn runs at a time
 - this transport slice has been smoke-tested against `codex-acp 0.11.1` using the `chatgpt` auth method
 - a repo-owned opt-in live restore smoke now proves that a persisted local Legate session can be restored in a fresh Neovim process, explicitly rebound through `session/load`, and also that a follow-up without explicit load does not auto-resume the old remote
@@ -108,6 +109,7 @@ Example local `lazy.nvim` spec:
 - a repo-owned opt-in live terminal-selection probe now requires an observed terminal or ACP tool-call path and records whether `codex-acp` actually used ACP `terminal/*` plus which ACP tool-call kinds were observed instead
 - current local probe runs with both `terminal_backend = 'native'` and `terminal_backend = 'terminal_manager'` still chose an `execute` tool call and made zero ACP `terminal/*` requests
 - terminal support is defined as a contract now, and the current slice ships both the default native hidden-process backend and a `terminalia.nvim` adapter backend
+- Legate contributes a producer-owned Statuesque widget at `statuesque.widgets.legate`; use `{ name = 'legate', optional = true }` in a Statuesque surface to show active session, adapter, turn state, approval count, and remote-sync state without extra user-side wiring
 
 ## Terminal Backends
 

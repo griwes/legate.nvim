@@ -55,12 +55,18 @@ end
 ---@field has_workspace_summary boolean
 ---@field has_terminals_summary boolean
 ---@field has_tasks_summary boolean
+---@field has_git_repository boolean
+---@field has_git_overview boolean
+---@field has_git_refs boolean
+---@field has_git_paths boolean
+---@field has_git_path boolean
 ---@field has_dap_summary boolean
 ---@field has_dap_breakpoints boolean
 ---@field has_dap_threads boolean
 ---@field has_any_tools boolean
 ---@field has_any_editor_tools boolean
 ---@field has_any_terminal_tools boolean
+---@field has_any_git_tools boolean
 ---@field has_any_dap_tools boolean
 ---@field has_list_buffers boolean
 ---@field has_read_buffer boolean
@@ -74,6 +80,10 @@ end
 ---@field has_terminal_output boolean
 ---@field has_terminal_wait boolean
 ---@field has_terminal_release boolean
+---@field has_git_overview_tool boolean
+---@field has_git_list_refs boolean
+---@field has_git_list_paths boolean
+---@field has_git_path_state boolean
 ---@field has_dap_continue boolean
 ---@field has_dap_pause boolean
 ---@field has_dap_step_over boolean
@@ -96,6 +106,23 @@ local function quoted_list(values)
     )
 end
 
+---@param groups string[]
+---@return string
+local function tool_group_list(groups)
+    if #groups == 1 then
+        return string.format('`%s`', groups[1])
+    end
+    if #groups == 2 then
+        return string.format('`%s` or `%s`', groups[1], groups[2])
+    end
+
+    local quoted = vim.tbl_map(function(group)
+        return string.format('`%s`', group)
+    end, groups)
+    quoted[#quoted] = 'or ' .. quoted[#quoted]
+    return table.concat(quoted, ', ')
+end
+
 ---@param ministry table
 ---@param server_name string
 ---@return legate.McpGuidanceSurface
@@ -105,12 +132,18 @@ local function available_surface(ministry, server_name)
         has_workspace_summary = false,
         has_terminals_summary = false,
         has_tasks_summary = false,
+        has_git_repository = false,
+        has_git_overview = false,
+        has_git_refs = false,
+        has_git_paths = false,
+        has_git_path = false,
         has_dap_summary = false,
         has_dap_breakpoints = false,
         has_dap_threads = false,
         has_any_tools = false,
         has_any_editor_tools = false,
         has_any_terminal_tools = false,
+        has_any_git_tools = false,
         has_any_dap_tools = false,
         has_list_buffers = false,
         has_read_buffer = false,
@@ -124,6 +157,10 @@ local function available_surface(ministry, server_name)
         has_terminal_output = false,
         has_terminal_wait = false,
         has_terminal_release = false,
+        has_git_overview_tool = false,
+        has_git_list_refs = false,
+        has_git_list_paths = false,
+        has_git_path_state = false,
         has_dap_continue = false,
         has_dap_pause = false,
         has_dap_step_over = false,
@@ -150,6 +187,21 @@ local function available_surface(ministry, server_name)
             elseif resource.namespaced_uri == string.format('%s/tasks://summary', server_name) then
                 surface.has_resources = true
                 surface.has_tasks_summary = true
+            elseif resource.namespaced_uri == string.format('%s/git://repository', server_name) then
+                surface.has_resources = true
+                surface.has_git_repository = true
+            elseif resource.namespaced_uri == string.format('%s/git://overview', server_name) then
+                surface.has_resources = true
+                surface.has_git_overview = true
+            elseif resource.namespaced_uri == string.format('%s/git://refs', server_name) then
+                surface.has_resources = true
+                surface.has_git_refs = true
+            elseif resource.namespaced_uri == string.format('%s/git://paths', server_name) then
+                surface.has_resources = true
+                surface.has_git_paths = true
+            elseif resource.namespaced_uri == string.format('%s/git://path', server_name) then
+                surface.has_resources = true
+                surface.has_git_path = true
             elseif resource.namespaced_uri == string.format('%s/dap://summary', server_name) then
                 surface.has_resources = true
                 surface.has_dap_summary = true
@@ -165,9 +217,13 @@ local function available_surface(ministry, server_name)
 
     if type(ministry.list_resource_template_descriptors) == 'function' then
         for _, resource_template in ipairs(ministry.list_resource_template_descriptors()) do
-            if resource_template.namespaced_uri_template == string.format('%s/dap://stack/{thread_id}', server_name) then
+            if
+                resource_template.namespaced_uri_template == string.format('%s/dap://stack/{thread_id}', server_name)
+            then
                 surface.has_dap_stack_template = true
-            elseif resource_template.namespaced_uri_template == string.format('%s/dap://scopes/{frame_id}', server_name) then
+            elseif
+                resource_template.namespaced_uri_template == string.format('%s/dap://scopes/{frame_id}', server_name)
+            then
                 surface.has_dap_scopes_template = true
             elseif
                 resource_template.namespaced_uri_template
@@ -204,6 +260,14 @@ local function available_surface(ministry, server_name)
                 surface.has_terminal_wait = true
             elseif tool.namespaced_name == string.format('%s/terminal/release', server_name) then
                 surface.has_terminal_release = true
+            elseif tool.namespaced_name == string.format('%s/git/overview', server_name) then
+                surface.has_git_overview_tool = true
+            elseif tool.namespaced_name == string.format('%s/git/list_refs', server_name) then
+                surface.has_git_list_refs = true
+            elseif tool.namespaced_name == string.format('%s/git/list_paths', server_name) then
+                surface.has_git_list_paths = true
+            elseif tool.namespaced_name == string.format('%s/git/path_state', server_name) then
+                surface.has_git_path_state = true
             elseif tool.namespaced_name == string.format('%s/dap/continue', server_name) then
                 surface.has_dap_continue = true
             elseif tool.namespaced_name == string.format('%s/dap/pause', server_name) then
@@ -234,6 +298,10 @@ local function available_surface(ministry, server_name)
         or surface.has_terminal_output
         or surface.has_terminal_wait
         or surface.has_terminal_release
+    surface.has_any_git_tools = surface.has_git_overview_tool
+        or surface.has_git_list_refs
+        or surface.has_git_list_paths
+        or surface.has_git_path_state
     surface.has_any_dap_tools = surface.has_dap_continue
         or surface.has_dap_pause
         or surface.has_dap_step_over
@@ -241,9 +309,33 @@ local function available_surface(ministry, server_name)
         or surface.has_dap_step_out
         or surface.has_dap_terminate
         or surface.has_dap_disconnect
-    surface.has_any_tools = surface.has_any_editor_tools or surface.has_any_terminal_tools or surface.has_any_dap_tools
+    surface.has_any_tools = surface.has_any_editor_tools
+        or surface.has_any_terminal_tools
+        or surface.has_any_git_tools
+        or surface.has_any_dap_tools
 
     return surface
+end
+
+---@param surface legate.McpGuidanceSurface
+---@return string[]
+local function active_tool_groups(surface)
+    local groups = {}
+
+    if surface.has_any_editor_tools then
+        table.insert(groups, 'editor/...')
+    end
+    if surface.has_any_terminal_tools then
+        table.insert(groups, 'terminal/...')
+    end
+    if surface.has_any_git_tools then
+        table.insert(groups, 'git/...')
+    end
+    if surface.has_any_dap_tools then
+        table.insert(groups, 'dap/...')
+    end
+
+    return groups
 end
 
 ---@param server_name string
@@ -267,66 +359,14 @@ local function guidance_for(server_name, agent_capabilities)
                 server_name
             )
         )
-        if surface.has_any_editor_tools and surface.has_any_terminal_tools and surface.has_any_dap_tools then
+        local tool_groups = active_tool_groups(surface)
+        if #tool_groups > 0 then
             table.insert(
                 lines,
                 string.format(
-                    '- When the tool call surface separates server selection from tool selection, choose MCP server `%s` and then tool path `editor/...`, `terminal/...`, or `dap/...` without repeating the `%s/` prefix inside the tool-path field.',
+                    '- When the tool call surface separates server selection from tool selection, choose MCP server `%s` and then tool path %s without repeating the `%s/` prefix inside the tool-path field.',
                     server_name,
-                    server_name
-                )
-            )
-        elseif surface.has_any_editor_tools and surface.has_any_terminal_tools then
-            table.insert(
-                lines,
-                string.format(
-                    '- When the tool call surface separates server selection from tool selection, choose MCP server `%s` and then tool path `editor/...` or `terminal/...` without repeating the `%s/` prefix inside the tool-path field.',
-                    server_name,
-                    server_name
-                )
-            )
-        elseif surface.has_any_editor_tools and surface.has_any_dap_tools then
-            table.insert(
-                lines,
-                string.format(
-                    '- When the tool call surface separates server selection from tool selection, choose MCP server `%s` and then tool path `editor/...` or `dap/...` without repeating the `%s/` prefix inside the tool-path field.',
-                    server_name,
-                    server_name
-                )
-            )
-        elseif surface.has_any_terminal_tools and surface.has_any_dap_tools then
-            table.insert(
-                lines,
-                string.format(
-                    '- When the tool call surface separates server selection from tool selection, choose MCP server `%s` and then tool path `terminal/...` or `dap/...` without repeating the `%s/` prefix inside the tool-path field.',
-                    server_name,
-                    server_name
-                )
-            )
-        elseif surface.has_any_editor_tools then
-            table.insert(
-                lines,
-                string.format(
-                    '- When the tool call surface separates server selection from tool selection, choose MCP server `%s` and then tool path `editor/...` without repeating the `%s/` prefix inside the tool-path field.',
-                    server_name,
-                    server_name
-                )
-            )
-        elseif surface.has_any_terminal_tools then
-            table.insert(
-                lines,
-                string.format(
-                    '- When the tool call surface separates server selection from tool selection, choose MCP server `%s` and then tool path `terminal/...` without repeating the `%s/` prefix inside the tool-path field.',
-                    server_name,
-                    server_name
-                )
-            )
-        elseif surface.has_any_dap_tools then
-            table.insert(
-                lines,
-                string.format(
-                    '- When the tool call surface separates server selection from tool selection, choose MCP server `%s` and then tool path `dap/...` without repeating the `%s/` prefix inside the tool-path field.',
-                    server_name,
+                    tool_group_list(tool_groups),
                     server_name
                 )
             )
@@ -446,7 +486,46 @@ local function guidance_for(server_name, agent_capabilities)
         )
     end
 
-    if has_resource_capabilities and (surface.has_dap_summary or surface.has_dap_breakpoints or surface.has_dap_threads) then
+    if
+        has_resource_capabilities
+        and (
+            surface.has_git_overview
+            or surface.has_git_repository
+            or surface.has_git_refs
+            or surface.has_git_paths
+            or surface.has_git_path
+        )
+    then
+        local git_resources = {}
+        if surface.has_git_overview then
+            table.insert(git_resources, string.format('%s/git://overview', server_name))
+        end
+        if surface.has_git_repository then
+            table.insert(git_resources, string.format('%s/git://repository', server_name))
+        end
+        if surface.has_git_refs then
+            table.insert(git_resources, string.format('%s/git://refs', server_name))
+        end
+        if surface.has_git_paths then
+            table.insert(git_resources, string.format('%s/git://paths', server_name))
+        end
+        if surface.has_git_path then
+            table.insert(git_resources, string.format('%s/git://path', server_name))
+        end
+
+        table.insert(
+            lines,
+            string.format(
+                '- For Git/repository orientation, prefer Ministry Git resources such as %s before shelling out to `git`; these are Stratum-backed and editor-visible.',
+                quoted_list(git_resources)
+            )
+        )
+    end
+
+    if
+        has_resource_capabilities
+        and (surface.has_dap_summary or surface.has_dap_breakpoints or surface.has_dap_threads)
+    then
         local dap_resources = {}
 
         if surface.has_dap_summary then
@@ -522,6 +601,31 @@ local function guidance_for(server_name, agent_capabilities)
         table.insert(
             lines,
             '- If you still choose a non-terminal execution path, explicitly explain why the required terminal channels were unavailable before proceeding.'
+        )
+    end
+
+    if has_tool_capabilities and surface.has_any_git_tools then
+        local git_tools = {}
+
+        if surface.has_git_overview_tool then
+            table.insert(git_tools, string.format('%s/git/overview', server_name))
+        end
+        if surface.has_git_list_refs then
+            table.insert(git_tools, string.format('%s/git/list_refs', server_name))
+        end
+        if surface.has_git_list_paths then
+            table.insert(git_tools, string.format('%s/git/list_paths', server_name))
+        end
+        if surface.has_git_path_state then
+            table.insert(git_tools, string.format('%s/git/path_state', server_name))
+        end
+
+        table.insert(
+            lines,
+            string.format(
+                '- Use Git MCP tools for explicit-path repository questions, especially %s, instead of re-deriving editor-visible Git state from shell commands.',
+                quoted_list(git_tools)
+            )
         )
     end
 

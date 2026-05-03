@@ -189,6 +189,7 @@ M.list_sessions = session_helper.list_sessions
 M.session_lines = session_helper.session_lines
 M.save_sessions = session_helper.save_sessions
 M.restore_sessions = session_helper.restore_sessions
+M.continue_last_session = session_helper.continue_last_session
 M.clear_session_storage = session_helper.clear_session_storage
 M.pick_session = session_helper.pick_session
 M.select_session = session_helper.select_session

@@ -2,6 +2,7 @@
 local M = {}
 local session_activity = require('legate.session.activity')
 local config = require('legate.config')
+local events = require('legate.events')
 local session_persist = require('legate.session.persist')
 local session_registry = require('legate.session.registry')
 local session_state = require('legate.session.state')
@@ -18,6 +19,14 @@ local activity_helper
 local persistence_helper
 local registry_helper
 local state_helper
+local unpack = table.unpack or unpack
+
+local function pack(...)
+    return {
+        n = select('#', ...),
+        ...,
+    }
+end
 
 ---@param adapter_name? string
 ---@return string
@@ -175,11 +184,80 @@ reconcile_status_messages = function(current_session)
     return activity_helper.reconcile_status_messages(current_session)
 end
 
+---@param value any
+---@return boolean
+local function is_session(value)
+    return type(value) == 'table' and type(value.id) == 'string' and type(value.status) == 'string'
+end
+
+---@param values table
+---@return legate.Session?
+local function first_session(values)
+    for index = 1, values.n or #values do
+        local value = values[index]
+        if is_session(value) then
+            return value
+        end
+    end
+
+    return nil
+end
+
+---@param name string
+---@param reason? string
+---@param resolve? fun(args: table, results: table): legate.Session?
+local function publish_mutation(name, reason, resolve)
+    local original = M[name]
+
+    M[name] = function(...)
+        local args = pack(...)
+        local results = pack(original(unpack(args, 1, args.n)))
+        local changed_session = resolve and resolve(args, results) or first_session(results) or first_session(args)
+
+        events.session_changed(reason or name, changed_session)
+
+        return unpack(results, 1, results.n)
+    end
+end
+
+publish_mutation('set_adapter')
+publish_mutation('reset_adapter_runtime_state')
+publish_mutation('create')
+publish_mutation('ensure')
+publish_mutation('select')
+publish_mutation('close', nil, function(_, results)
+    return results[2]
+end)
+publish_mutation('append_message')
+publish_mutation('append_chunk')
+publish_mutation('set_draft_prompt')
+publish_mutation('begin_prompt')
+publish_mutation('finish_prompt')
+publish_mutation('set_remote_id')
+publish_mutation('set_transport_remote_id')
+publish_mutation('clear_remote_id')
+publish_mutation('set_cwd')
+publish_mutation('set_remote_sync_state')
+publish_mutation('set_agent_info')
+publish_mutation('set_config_options')
+publish_mutation('set_plan')
+publish_mutation('set_available_commands')
+publish_mutation('add_tool_call')
+publish_mutation('update_tool_call')
+publish_mutation('record_approval')
+publish_mutation('wait_for_approval')
+publish_mutation('apply_update')
+publish_mutation('clear_pending_approval_by_request_id')
+publish_mutation('promote_pending_approval_by_request_id')
+publish_mutation('clear_pending_approval')
+publish_mutation('cancel')
+
 ---Clear all in-memory ACP session state.
 function M.clear()
     registry_helper.clear()
     next_message_id = 1
     next_pending_approval_ordinal = 1
+    events.session_changed('clear', nil)
 end
 
 ---Return a persisted snapshot of all local ACP sessions.
@@ -261,6 +339,7 @@ function M.restore(payload)
         end
     end
 
+    events.session_changed('restore', M.current())
     return ordered
 end
 

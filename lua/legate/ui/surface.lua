@@ -11,65 +11,14 @@ local highlights_ready = false
 ---@field waiting integer
 ---@field neutral integer
 
----@param group string
----@return table?
-local function highlight_definition(group)
-    local ok, definition = pcall(vim.api.nvim_get_hl, 0, {
-        name = group,
-    })
-
-    if not ok then
-        return nil
-    end
-
-    return definition
-end
-
----@param groups string[]
----@return integer?
-local function first_foreground(groups)
-    for _, group in ipairs(groups) do
-        local definition = highlight_definition(group)
-
-        if definition ~= nil and definition.fg ~= nil then
-            return definition.fg
-        end
-    end
-
-    return nil
-end
-
 ---@return legate.HighlightPalette
 local function resolve_palette()
     return {
-        success = first_foreground({
-            'DiagnosticOk',
-            'String',
-            'MoreMsg',
-            'Question',
-        }) or 0x98C379,
-        failure = first_foreground({
-            'DiagnosticError',
-            'ErrorMsg',
-            'SpellBad',
-        }) or 0xE06C75,
-        pending = first_foreground({
-            'DiagnosticInfo',
-            'Directory',
-            'Function',
-            'Identifier',
-        }) or 0x61AFEF,
-        waiting = first_foreground({
-            'DiagnosticWarn',
-            'WarningMsg',
-            'Special',
-        }) or 0xE5C07B,
-        neutral = first_foreground({
-            'Comment',
-            'LineNr',
-            'NonText',
-            'Normal',
-        }) or 0x7F848E,
+        success = 0x98C379,
+        failure = 0xE06C75,
+        pending = 0x61AFEF,
+        waiting = 0xE5C07B,
+        neutral = 0x7F848E,
     }
 end
 

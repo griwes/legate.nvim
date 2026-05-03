@@ -47,6 +47,27 @@ function M.new(deps)
         return lines
     end
 
+    ---@param candidates legate.Session[]
+    ---@return legate.Session?
+    local function latest_session(candidates)
+        local latest = nil
+
+        for _, current_session in ipairs(candidates) do
+            if
+                latest == nil
+                or (tonumber(current_session.updated_at) or 0) > (tonumber(latest.updated_at) or 0)
+                or (
+                    (tonumber(current_session.updated_at) or 0) == (tonumber(latest.updated_at) or 0)
+                    and current_session.ordinal > latest.ordinal
+                )
+            then
+                latest = current_session
+            end
+        end
+
+        return latest
+    end
+
     ---@return string[]
     function helper.adapter_names()
         return deps.config.adapter_names()
@@ -138,6 +159,35 @@ function M.new(deps)
         end
 
         return restored
+    end
+
+    ---Restore/select/open the most recently updated local ACP session.
+    ---@return legate.Session
+    function helper.continue_last_session()
+        local sessions = deps.continuity.list()
+
+        if #sessions == 0 and deps.config.get().persist_sessions then
+            helper.restore_sessions()
+            sessions = deps.continuity.list()
+        end
+
+        local target = latest_session(sessions)
+        deps.store_draft(deps.continuity.current())
+
+        if target == nil then
+            if deps.config.get().auto_create_session then
+                deps.open_chat()
+                return assert(deps.continuity.current())
+            end
+
+            error('No ACP session history exists')
+        end
+
+        target = deps.continuity.select(target.id)
+        deps.render.render(target, target.draft_prompt)
+        deps.open_chat()
+
+        return target
     end
 
     function helper.clear_session_storage()

@@ -7,6 +7,7 @@ it('registers ACP user commands', function()
         'LegateSessions',
         'LegateSaveSessions',
         'LegateRestoreSessions',
+        'LegateContinueLastSession',
         'LegateClearSessionStorage',
         'LegateApprovals',
         'LegateSelectApprovalOption',
@@ -774,6 +775,45 @@ it('loads an ACP session through the command surface', function()
 
     assert.are.equal('sess_123', api.current_session().remote_id)
     assert.are.equal('created', api.current_session().remote_sync_state)
+end)
+
+it('continues the newest persisted ACP session through the command surface', function()
+    local state_file = temp_path('acp-command-continue-last.json')
+
+    vim.fn.writefile({
+        vim.json.encode({
+            current_id = 'acp:1',
+            next_ordinal = 3,
+            next_message_id = 1,
+            sessions = {
+                {
+                    id = 'acp:1',
+                    ordinal = 1,
+                    status = 'idle',
+                    messages = {},
+                    draft_prompt = 'older command draft',
+                    updated_at = 10,
+                },
+                {
+                    id = 'acp:2',
+                    ordinal = 2,
+                    status = 'idle',
+                    messages = {},
+                    draft_prompt = 'newer command draft',
+                    updated_at = 20,
+                },
+            },
+        }),
+    }, state_file)
+
+    plugin.setup({
+        session_state_file = state_file,
+    })
+
+    vim.cmd('LegateContinueLastSession')
+
+    assert.are.equal('acp:2', api.current_session().id)
+    assert.are.equal('newer command draft', api.get_prompt())
 end)
 
 it('rebinds a load_failed ACP session through the command surface', function()

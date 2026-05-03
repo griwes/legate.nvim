@@ -5,6 +5,7 @@ it('loads and exposes setup', function()
     assert.are.equal('function', type(api.open_chat))
     assert.are.equal('function', type(api.list_sessions))
     assert.are.equal('function', type(api.select_session))
+    assert.are.equal('function', type(api.continue_last_session))
 end)
 
 it('normalizes configuration with defaults', function()
@@ -989,6 +990,137 @@ it('restores sessions with open_chat=true without clobbering existing buffer dra
 
     assert.are.equal('persisted draft', api.current_session().draft_prompt)
     assert.are.equal('persisted draft', api.get_prompt())
+end)
+
+it('continues the most recently updated in-memory ACP session', function()
+    require('legate.session').restore({
+        current_id = 'acp:1',
+        next_ordinal = 3,
+        next_message_id = 1,
+        sessions = {
+            {
+                id = 'acp:1',
+                ordinal = 1,
+                status = 'idle',
+                messages = {},
+                draft_prompt = 'older draft',
+                updated_at = 10,
+            },
+            {
+                id = 'acp:2',
+                ordinal = 2,
+                status = 'idle',
+                messages = {},
+                draft_prompt = 'newer draft',
+                updated_at = 30,
+            },
+        },
+    })
+
+    local continued = api.continue_last_session()
+
+    assert.are.equal('acp:2', continued.id)
+    assert.are.equal('acp:2', api.current_session().id)
+    assert.are.equal('newer draft', api.get_prompt())
+end)
+
+it('continues the newest persisted ACP session when memory has no sessions', function()
+    local state_file = temp_path('acp-continue-last.json')
+
+    vim.fn.writefile({
+        vim.json.encode({
+            current_id = 'acp:1',
+            next_ordinal = 3,
+            next_message_id = 1,
+            sessions = {
+                {
+                    id = 'acp:1',
+                    ordinal = 1,
+                    status = 'idle',
+                    messages = {},
+                    draft_prompt = 'current but older',
+                    updated_at = 20,
+                },
+                {
+                    id = 'acp:2',
+                    ordinal = 2,
+                    status = 'idle',
+                    messages = {},
+                    draft_prompt = 'latest persisted',
+                    updated_at = 40,
+                },
+            },
+        }),
+    }, state_file)
+
+    plugin.setup({
+        session_state_file = state_file,
+    })
+
+    local continued = api.continue_last_session()
+
+    assert.are.equal('acp:2', continued.id)
+    assert.are.equal('acp:2', api.current_session().id)
+    assert.are.equal('latest persisted', api.get_prompt())
+end)
+
+it('continues the pre-existing newest ACP session without clobbering its draft from the visible buffer', function()
+    local sessions = require('legate.session')
+
+    sessions.restore({
+        current_id = 'acp:1',
+        next_ordinal = 3,
+        next_message_id = 1,
+        sessions = {
+            {
+                id = 'acp:1',
+                ordinal = 1,
+                status = 'idle',
+                messages = {},
+                draft_prompt = 'older original draft',
+                updated_at = 10,
+            },
+            {
+                id = 'acp:2',
+                ordinal = 2,
+                status = 'idle',
+                messages = {},
+                draft_prompt = 'newer preserved draft',
+                updated_at = 20,
+            },
+        },
+    })
+    local bufnr = api.open_chat()
+    require('legate.ui.input').set_prompt(bufnr, 'old visible buffer draft')
+
+    local continued = api.continue_last_session()
+
+    assert.are.equal('acp:2', continued.id)
+    assert.are.equal('acp:2', api.current_session().id)
+    assert.are.equal('newer preserved draft', api.get_prompt())
+    assert.are.equal('old visible buffer draft', sessions.get('acp:1').draft_prompt)
+    assert.are.equal('newer preserved draft', sessions.get('acp:2').draft_prompt)
+end)
+
+it('creates a fresh chat when continuing with no history and auto-create enabled', function()
+    plugin.setup({
+        auto_create_session = true,
+    })
+
+    local continued = api.continue_last_session()
+
+    assert.are.equal('acp:1', continued.id)
+    assert.are.equal('acp:1', api.current_session().id)
+end)
+
+it('reports missing ACP history when continuing with no history and no auto-create', function()
+    plugin.setup({
+        auto_create_session = false,
+    })
+
+    assert.has_error(function()
+        api.continue_last_session()
+    end, 'No ACP session history exists')
 end)
 
 it('returns a save failure so callers can detect persistence errors', function()
