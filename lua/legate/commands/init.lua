@@ -131,6 +131,36 @@ local function pending_approval_option_selections_with_request()
     return ids
 end
 
+---@return string[]
+local function approval_mode_values()
+    local values = {
+        'strict',
+        'yolo',
+    }
+
+    local ok, options = pcall(function()
+        return api().config_options()
+    end)
+
+    if not ok then
+        return values
+    end
+
+    for _, option in ipairs(options) do
+        if option.id == 'mode' then
+            for _, choice in ipairs(config_option.choices(option)) do
+                if type(choice.value.value) == 'string' then
+                    table.insert(values, choice.value.value)
+                end
+            end
+            break
+        end
+    end
+
+    table.sort(values)
+    return values
+end
+
 ---@param session_id? string
 ---@return string[]
 local function config_option_ids(session_id)
@@ -320,6 +350,24 @@ function M.ensure()
         desc = 'List Legate approval history',
     })
 
+    create('LegateClearApprovals', function(opts)
+        local args = vim.trim(opts.args)
+        local cleared = api().clear_pending_approvals(args ~= '' and args or nil)
+
+        if cleared == 0 then
+            vim.notify('No Legate approvals are pending')
+            return
+        end
+
+        vim.notify(string.format('Cleared %d pending Legate approval%s', cleared, cleared == 1 and '' or 's'))
+    end, {
+        desc = 'Cancel pending Legate approvals without cancelling the whole prompt turn',
+        nargs = '?',
+        complete = function()
+            return session_ids()
+        end,
+    })
+
     create('LegateSelectApprovalOption', function(opts)
         local selection = vim.trim(opts.args)
 
@@ -333,6 +381,24 @@ function M.ensure()
         nargs = 1,
         complete = function()
             return pending_approval_option_selections_with_request()
+        end,
+    })
+
+    create('LegateApprovalMode', function(opts)
+        local mode = vim.trim(opts.args)
+
+        if mode == '' then
+            error('LegateApprovalMode expects strict, yolo, or an ACP mode value')
+        end
+
+        api().set_approval_mode(mode)
+    end, {
+        desc = 'Set the ACP approval mode; strict maps to ask and yolo maps to code when supported by the adapter',
+        nargs = 1,
+        complete = function(arglead)
+            return vim.tbl_filter(function(value)
+                return vim.startswith(value, arglead)
+            end, approval_mode_values())
         end,
     })
 

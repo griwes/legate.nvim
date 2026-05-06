@@ -148,19 +148,22 @@ function M.new(deps)
     end
 
     ---@param current_session? legate.Session
+    ---@return integer
     function helper.cancel_pending_permission(current_session)
         local pending_permissions = deps.state.pending_permissions or {}
 
         if #pending_permissions == 0 then
-            return
+            return 0
         end
 
         local retained = {}
+        local cancelled = 0
 
         for _, pending_permission in ipairs(pending_permissions) do
             if current_session ~= nil and pending_permission.local_session_id ~= current_session.id then
                 table.insert(retained, pending_permission)
             else
+                cancelled = cancelled + 1
                 local pending_session = deps.continuity.get(pending_permission.local_session_id)
 
                 if pending_session ~= nil then
@@ -180,6 +183,7 @@ function M.new(deps)
         end
 
         deps.state.pending_permissions = retained
+        return cancelled
     end
 
     ---@param current_session legate.Session

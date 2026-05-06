@@ -108,6 +108,13 @@ function M.new(deps)
         end)
     end
 
+    ---@param session_id? string
+    ---@return integer
+    function helper.clear_pending_approvals(session_id)
+        local current_session = session_id ~= nil and deps.resolve_session(session_id) or nil
+        return deps.transport.cancel_pending_approvals(current_session)
+    end
+
     ---@param selection string|integer
     ---@param session_id? string
     ---@return legate.PermissionOutcome

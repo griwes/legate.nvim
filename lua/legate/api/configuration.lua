@@ -1,5 +1,10 @@
 local M = {}
 
+local approval_mode_aliases = {
+    strict = 'ask',
+    yolo = 'code',
+}
+
 ---@param deps { buffer: legate.BufferModule, config_option: legate.ConfigOptionModule, continuity: legate.SessionModule, formatters: table, prompt_helper: table, render: legate.RenderModule, resolve_session: fun(session_id?: string): legate.Session, transport: legate.TransportModule }
 ---@return table
 function M.new(deps)
@@ -114,6 +119,14 @@ function M.new(deps)
         rerender_selected_session(current_session, prompt)
 
         return current_session
+    end
+
+    ---@param mode string
+    ---@param session_id? string
+    ---@return legate.Session
+    function helper.set_approval_mode(mode, session_id)
+        local normalized = approval_mode_aliases[mode] or mode
+        return helper.set_config_option('mode', normalized, session_id)
     end
 
     ---@param session_id? string

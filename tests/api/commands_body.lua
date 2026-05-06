@@ -10,7 +10,9 @@ it('registers ACP user commands', function()
         'LegateContinueLastSession',
         'LegateClearSessionStorage',
         'LegateApprovals',
+        'LegateClearApprovals',
         'LegateSelectApprovalOption',
+        'LegateApprovalMode',
         'LegateConfigOptions',
         'LegateSlashCommands',
         'LegateRevealApproval',
@@ -311,6 +313,55 @@ it('resolves the current inline ACP approval through the command surface', funct
     assert.are.equal('selected', response.result.outcome.outcome)
     assert.are.equal('allow-once', response.result.outcome.optionId)
     assert.is_true(vim.tbl_contains(lines, '✓ Approval [1] Run command'))
+end)
+
+it('clears pending ACP approvals through the command surface', function()
+    plugin.setup({
+        permission_strategy = 'select',
+    })
+    api.open_chat()
+    api.set_prompt('approval command clear')
+    api.submit_prompt()
+
+    local response = nil
+    fake_client.opts.on_request('session/request_permission', {
+        sessionId = 'sess_123',
+        toolCall = {
+            toolCallId = 'approval_clear',
+            title = 'Run command',
+        },
+        options = {
+            {
+                optionId = 'allow-once',
+                name = 'Allow once',
+                kind = 'allow_once',
+            },
+            {
+                optionId = 'reject-once',
+                name = 'Reject',
+                kind = 'reject_once',
+            },
+        },
+    }, function(result, error)
+        response = {
+            result = result,
+            error = error,
+        }
+    end)
+
+    local notifications = {}
+    local original_notify = vim.notify
+    vim.notify = function(message)
+        table.insert(notifications, message)
+    end
+
+    vim.cmd('LegateClearApprovals')
+
+    vim.notify = original_notify
+
+    assert.are.equal('cancelled', response.result.outcome.outcome)
+    assert.is_nil(api.pending_approval())
+    assert.are.same({ 'Cleared 1 pending Legate approval' }, notifications)
 end)
 
 it('completes bare approval option ids for a single pending request without numeric aliases', function()
@@ -865,6 +916,20 @@ it('sets an ACP config option through the command surface', function()
 
     assert.are.equal('session/set_config_option', fake_client.sync_calls[4].method)
     assert.are.equal('code', api.current_session().config_options[1].currentValue)
+end)
+
+it('sets ACP approval mode aliases through the command surface', function()
+    api.open_chat()
+
+    vim.cmd('LegateApprovalMode yolo')
+    assert.are.equal('session/set_config_option', fake_client.sync_calls[4].method)
+    assert.are.equal('code', fake_client.sync_calls[4].params.value)
+    assert.are.equal('code', api.current_session().config_options[1].currentValue)
+
+    vim.cmd('LegateApprovalMode strict')
+    assert.are.equal('session/set_config_option', fake_client.sync_calls[5].method)
+    assert.are.equal('ask', fake_client.sync_calls[5].params.value)
+    assert.are.equal('ask', api.current_session().config_options[1].currentValue)
 end)
 
 it('sets an ACP config option through the picker command surface', function()

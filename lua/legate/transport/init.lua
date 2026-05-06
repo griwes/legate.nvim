@@ -446,6 +446,19 @@ function M.cancel(current_session)
     })
 end
 
+---@param current_session? legate.Session
+---@return integer
+function M.cancel_pending_approvals(current_session)
+    local cancelled = runtime_helper.cancel_pending_permission(current_session)
+    local selected_session = continuity.current()
+
+    if selected_session ~= nil and buffer.get() ~= nil then
+        runtime_helper.rerender(selected_session)
+    end
+
+    return cancelled
+end
+
 function M.clear()
     local current_session = continuity.current()
     runtime_helper.cancel_pending_permission(nil)

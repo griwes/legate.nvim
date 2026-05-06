@@ -218,6 +218,7 @@ M.pending_approvals = approval_helper.pending_approvals
 M.approval_lines = approval_helper.approval_lines
 M.reveal_approval = approval_helper.reveal_approval
 M.pick_approval = approval_helper.pick_approval
+M.clear_pending_approvals = approval_helper.clear_pending_approvals
 M.select_approval_option = approval_helper.select_approval_option
 
 -- Config-option query and mutation facade.
@@ -225,6 +226,7 @@ M.config_options = configuration_helper.config_options
 M.config_option_lines = configuration_helper.config_option_lines
 M.pick_config_option = configuration_helper.pick_config_option
 M.set_config_option = configuration_helper.set_config_option
+M.set_approval_mode = configuration_helper.set_approval_mode
 
 -- Slash-command query and submission facade.
 M.slash_commands = slash_command_helper.slash_commands
