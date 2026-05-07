@@ -175,6 +175,9 @@ it('injects the http ACP-managed server without replacing user-defined aliases',
         list_resource_descriptors = function()
             return {
                 {
+                    namespaced_uri = 'neovim/buffers://list',
+                },
+                {
                     namespaced_uri = 'neovim/workspace://summary',
                 },
             }
@@ -708,124 +711,23 @@ it('starts ministry.nvim before refreshing a stale cached stdio descriptor', fun
     assert.are.equal(1, started)
 end)
 
-it('prepends guidance with the effective injected server namespace', function()
+it('prepends Ministry-owned server guidance in effective server order', function()
     local original_mcp = package.loaded['ministry']
 
     package.loaded['ministry'] = {
         start_all = function()
             return true
         end,
-        list_resource_descriptors = function()
+        list_server_guidance = function(context)
+            assert.are.equal('legate', context.consumer)
             return {
                 {
-                    namespaced_uri = 'neovim/workspace://summary',
-                },
-            }
-        end,
-        list_tool_descriptors = function()
-            return {
-                {
-                    namespaced_name = 'neovim/editor/list_buffers',
+                    server = 'neovim',
+                    guidance = 'NEOVIM GUIDANCE',
                 },
                 {
-                    namespaced_name = 'neovim/editor/read_buffer',
-                },
-                {
-                    namespaced_name = 'neovim/editor/write_buffer',
-                },
-                {
-                    namespaced_name = 'neovim/editor/diff_buffer',
-                },
-                {
-                    namespaced_name = 'neovim/editor/apply_diff_buffer',
-                },
-                {
-                    namespaced_name = 'neovim/editor/diff_file',
-                },
-                {
-                    namespaced_name = 'neovim/editor/apply_diff_file',
-                },
-                {
-                    namespaced_name = 'neovim/editor/write_file',
-                },
-                {
-                    namespaced_name = 'neovim/terminal/create',
-                },
-                {
-                    namespaced_name = 'neovim/terminal/output',
-                },
-                {
-                    namespaced_name = 'neovim/terminal/wait',
-                },
-                {
-                    namespaced_name = 'neovim/terminal/release',
-                },
-            }
-        end,
-        http_endpoint = function()
-            return {
-                url = 'http://127.0.0.1:7777/mcp',
-            }
-        end,
-        endpoint = function()
-            return {
-                command = 'nvim-mcp',
-                args = { '--stdio' },
-            }
-        end,
-    }
-
-    plugin.setup({
-        enable_mcp_nvim = true,
-        mcp_nvim_guidance = true,
-        mcp_servers = {},
-    })
-
-    package.loaded['legate.mcp.runtime'] = nil
-    package.loaded['legate.mcp.guidance'] = nil
-    local guidance = require('legate.mcp.guidance')
-    local prompt = guidance.prepend('hello', {
-        mcpCapabilities = {
-            tools = {
-                listChanged = true,
-            },
-            resources = {
-                listChanged = true,
-            },
-        },
-    })
-
-    package.loaded['ministry'] = original_mcp
-
-    assert.is_true(prompt:find('`neovim`', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/workspace://summary', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/editor/list_buffers', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/terminal/wait', 1, true) ~= nil)
-    assert.is_true(prompt:find('session%-global editor/workspace metadata', 1, false) ~= nil)
-    assert.is_true(prompt:find('tool path `editor/...` or `terminal/...`', 1, true) ~= nil)
-    assert.is_false(prompt:find('editor__list_buffers', 1, true) ~= nil)
-    assert.is_false(prompt:find('terminal__wait', 1, true) ~= nil)
-    assert.is_false(prompt:find('acp%.nvim/editor/list_buffers', 1, false) ~= nil)
-end)
-
-it('ignores the legacy ministry.nvim alias when selecting guidance namespace', function()
-    local original_mcp = package.loaded['ministry']
-
-    package.loaded['ministry'] = {
-        start_all = function()
-            return true
-        end,
-        list_resource_descriptors = function()
-            return {
-                {
-                    namespaced_uri = 'neovim/workspace://summary',
-                },
-            }
-        end,
-        list_tool_descriptors = function()
-            return {
-                {
-                    namespaced_name = 'neovim/editor/list_buffers',
+                    server = 'custom',
+                    guidance = 'CUSTOM GUIDANCE',
                 },
             }
         end,
@@ -845,9 +747,9 @@ it('ignores the legacy ministry.nvim alias when selecting guidance namespace', f
         mcp_nvim_guidance = true,
         mcp_servers = {
             {
-                name = 'ministry.nvim',
+                name = 'custom',
                 type = 'stdio',
-                command = 'old-mcp',
+                command = 'custom-mcp',
             },
         },
     })
@@ -860,26 +762,72 @@ it('ignores the legacy ministry.nvim alias when selecting guidance namespace', f
             tools = {
                 listChanged = true,
             },
-            resources = {
-                listChanged = true,
-            },
         },
     })
 
     package.loaded['ministry'] = original_mcp
 
-    assert.is_true(prompt:find('`neovim`', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/workspace://summary', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/editor/list_buffers', 1, true) ~= nil)
-    assert.is_false(prompt:find('mcp%.nvim/editor/list_buffers', 1, false) ~= nil)
+    assert.are.equal(
+        'Additional guidance for MCP server `neovim`:\nNEOVIM GUIDANCE\n\n'
+            .. 'Additional guidance for MCP server `custom`:\nCUSTOM GUIDANCE\n\nhello',
+        prompt
+    )
 end)
 
-it('skips MCP guidance when the agent advertises an empty MCP capability set', function()
+it('prepends Ministry-owned guidance when MCP capabilities are absent', function()
     local original_mcp = package.loaded['ministry']
 
     package.loaded['ministry'] = {
         start_all = function()
             return true
+        end,
+        server_guidance = function(server_name, context)
+            assert.are.equal('neovim', server_name)
+            assert.are.same({
+                image = true,
+            }, context.agent_capabilities.promptCapabilities)
+            return 'NEOVIM GUIDANCE'
+        end,
+        http_endpoint = function()
+            return nil
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_nvim_guidance = true,
+        mcp_servers = {},
+    })
+
+    package.loaded['legate.mcp.runtime'] = nil
+    package.loaded['legate.mcp.guidance'] = nil
+    local guidance = require('legate.mcp.guidance')
+    local prompt = guidance.prepend('hello', {
+        promptCapabilities = {
+            image = true,
+        },
+    })
+
+    package.loaded['ministry'] = original_mcp
+
+    assert.are.equal('Additional guidance for MCP server `neovim`:\nNEOVIM GUIDANCE\n\nhello', prompt)
+end)
+
+it('prepends Ministry-owned guidance when the agent advertises an empty MCP capability set', function()
+    local original_mcp = package.loaded['ministry']
+
+    package.loaded['ministry'] = {
+        start_all = function()
+            return true
+        end,
+        server_guidance = function()
+            return 'NEOVIM GUIDANCE'
         end,
         http_endpoint = function()
             return nil
@@ -907,15 +855,18 @@ it('skips MCP guidance when the agent advertises an empty MCP capability set', f
 
     package.loaded['ministry'] = original_mcp
 
-    assert.are.equal('hello', prompt)
+    assert.are.equal('Additional guidance for MCP server `neovim`:\nNEOVIM GUIDANCE\n\nhello', prompt)
 end)
 
-it('skips MCP guidance when nested MCP capability payloads do not enable any capability', function()
+it('prepends Ministry-owned guidance when nested MCP capability payloads do not enable any capability', function()
     local original_mcp = package.loaded['ministry']
 
     package.loaded['ministry'] = {
         start_all = function()
             return true
+        end,
+        server_guidance = function()
+            return 'NEOVIM GUIDANCE'
         end,
         http_endpoint = function()
             return nil
@@ -948,804 +899,7 @@ it('skips MCP guidance when nested MCP capability payloads do not enable any cap
 
     package.loaded['ministry'] = original_mcp
 
-    assert.are.equal('hello', prompt)
-end)
-
-it('prepends MCP guidance when a nested MCP capability payload enables a capability', function()
-    local original_mcp = package.loaded['ministry']
-
-    package.loaded['ministry'] = {
-        start_all = function()
-            return true
-        end,
-        list_tool_descriptors = function()
-            return {
-                {
-                    namespaced_name = 'neovim/editor/list_buffers',
-                },
-            }
-        end,
-        http_endpoint = function()
-            return nil
-        end,
-        endpoint = function()
-            return {
-                command = 'nvim-mcp',
-                args = { '--stdio' },
-            }
-        end,
-    }
-
-    plugin.setup({
-        enable_mcp_nvim = true,
-        mcp_nvim_guidance = true,
-        mcp_servers = {},
-    })
-
-    package.loaded['legate.mcp.runtime'] = nil
-    package.loaded['legate.mcp.guidance'] = nil
-    local guidance = require('legate.mcp.guidance')
-    local prompt = guidance.prepend('hello', {
-        mcpCapabilities = {
-            tools = {
-                listChanged = true,
-            },
-        },
-    })
-
-    package.loaded['ministry'] = original_mcp
-
-    assert.is_true(prompt:find('neovim/editor/list_buffers', 1, true) ~= nil)
-    assert.is_false(prompt:find('neovim/workspace://summary', 1, true) ~= nil)
-end)
-
-it('prepends workspace-summary guidance only when MCP resources are enabled and surfaced', function()
-    local original_mcp = package.loaded['ministry']
-
-    package.loaded['ministry'] = {
-        start_all = function()
-            return true
-        end,
-        list_resource_descriptors = function()
-            return {
-                {
-                    namespaced_uri = 'neovim/workspace://summary',
-                },
-            }
-        end,
-        http_endpoint = function()
-            return nil
-        end,
-        endpoint = function()
-            return {
-                command = 'nvim-mcp',
-                args = { '--stdio' },
-            }
-        end,
-    }
-
-    plugin.setup({
-        enable_mcp_nvim = true,
-        mcp_nvim_guidance = true,
-        mcp_servers = {},
-    })
-
-    package.loaded['legate.mcp.runtime'] = nil
-    package.loaded['legate.mcp.guidance'] = nil
-    local guidance = require('legate.mcp.guidance')
-    local prompt = guidance.prepend('hello', {
-        mcpCapabilities = {
-            resources = {
-                listChanged = true,
-            },
-        },
-    })
-
-    package.loaded['ministry'] = original_mcp
-
-    assert.is_true(prompt:find('neovim/workspace://summary', 1, true) ~= nil)
-    assert.is_false(prompt:find('neovim/terminals://list', 1, true) ~= nil)
-    assert.is_false(prompt:find('neovim/editor/list_buffers', 1, true) ~= nil)
-    assert.is_false(prompt:find('neovim/terminal/create', 1, true) ~= nil)
-    assert.is_false(prompt:find('tool path `editor/...`', 1, true) ~= nil)
-end)
-
-it('prepends terminal-summary guidance only when MCP resources are enabled and surfaced', function()
-    local original_mcp = package.loaded['ministry']
-
-    package.loaded['ministry'] = {
-        start_all = function()
-            return true
-        end,
-        list_resource_descriptors = function()
-            return {
-                {
-                    namespaced_uri = 'neovim/terminals://list',
-                },
-            }
-        end,
-        http_endpoint = function()
-            return nil
-        end,
-        endpoint = function()
-            return {
-                command = 'nvim-mcp',
-                args = { '--stdio' },
-            }
-        end,
-    }
-
-    plugin.setup({
-        enable_mcp_nvim = true,
-        mcp_nvim_guidance = true,
-        mcp_servers = {},
-    })
-
-    package.loaded['legate.mcp.runtime'] = nil
-    package.loaded['legate.mcp.guidance'] = nil
-    local guidance = require('legate.mcp.guidance')
-    local prompt = guidance.prepend('hello', {
-        mcpCapabilities = {
-            resources = {
-                listChanged = true,
-            },
-        },
-    })
-
-    package.loaded['ministry'] = original_mcp
-
-    assert.is_true(prompt:find('neovim/terminals://list', 1, true) ~= nil)
-    assert.is_false(prompt:find('neovim/workspace://summary', 1, true) ~= nil)
-    assert.is_false(prompt:find('neovim/terminal/create', 1, true) ~= nil)
-    assert.is_false(prompt:find('tool path `terminal/...`', 1, true) ~= nil)
-end)
-
-it('prepends task-summary guidance only when generic task resources are enabled and surfaced', function()
-    local original_mcp = package.loaded['ministry']
-
-    package.loaded['ministry'] = {
-        start_all = function()
-            return true
-        end,
-        list_resource_descriptors = function()
-            return {
-                {
-                    namespaced_uri = 'neovim/tasks://summary',
-                },
-            }
-        end,
-        http_endpoint = function()
-            return nil
-        end,
-        endpoint = function()
-            return {
-                command = 'nvim-mcp',
-                args = { '--stdio' },
-            }
-        end,
-    }
-
-    plugin.setup({
-        enable_mcp_nvim = true,
-        mcp_nvim_guidance = true,
-        mcp_servers = {},
-    })
-
-    package.loaded['legate.mcp.runtime'] = nil
-    package.loaded['legate.mcp.guidance'] = nil
-    local guidance = require('legate.mcp.guidance')
-    local prompt = guidance.prepend('hello', {
-        mcpCapabilities = {
-            resources = {
-                listChanged = true,
-            },
-        },
-    })
-
-    package.loaded['ministry'] = original_mcp
-
-    assert.is_true(prompt:find('neovim/tasks://summary', 1, true) ~= nil)
-    assert.is_false(prompt:find('neovim/terminals://list', 1, true) ~= nil)
-    assert.is_false(prompt:find('neovim/workspace://summary', 1, true) ~= nil)
-end)
-
-it('prepends Git resource guidance only when repository resources are enabled and surfaced', function()
-    local original_mcp = package.loaded['ministry']
-
-    package.loaded['ministry'] = {
-        start_all = function()
-            return true
-        end,
-        list_resource_descriptors = function()
-            return {
-                { namespaced_uri = 'neovim/git://repository' },
-                { namespaced_uri = 'neovim/git://overview' },
-                { namespaced_uri = 'neovim/git://refs' },
-                { namespaced_uri = 'neovim/git://paths' },
-                { namespaced_uri = 'neovim/git://path' },
-            }
-        end,
-        http_endpoint = function()
-            return nil
-        end,
-        endpoint = function()
-            return {
-                command = 'nvim-mcp',
-                args = { '--stdio' },
-            }
-        end,
-    }
-
-    plugin.setup({
-        enable_mcp_nvim = true,
-        mcp_nvim_guidance = true,
-        mcp_servers = {},
-    })
-
-    package.loaded['legate.mcp.runtime'] = nil
-    package.loaded['legate.mcp.guidance'] = nil
-    local guidance = require('legate.mcp.guidance')
-    local prompt = guidance.prepend('hello', {
-        mcpCapabilities = {
-            resources = {
-                listChanged = true,
-            },
-        },
-    })
-
-    package.loaded['ministry'] = original_mcp
-
-    assert.is_true(prompt:find('neovim/git://repository', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/git://overview', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/git://refs', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/git://paths', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/git://path', 1, true) ~= nil)
-    assert.is_true(prompt:find('before shelling out to `git`', 1, true) ~= nil)
-    assert.is_false(prompt:find('neovim/git/overview', 1, true) ~= nil)
-    assert.is_false(prompt:find('tool path `git/...`', 1, true) ~= nil)
-end)
-
-it('prepends Git tool guidance only when repository tools are enabled and surfaced', function()
-    local original_mcp = package.loaded['ministry']
-
-    package.loaded['ministry'] = {
-        start_all = function()
-            return true
-        end,
-        list_tool_descriptors = function()
-            return {
-                { namespaced_name = 'neovim/git/overview' },
-                { namespaced_name = 'neovim/git/list_refs' },
-                { namespaced_name = 'neovim/git/list_paths' },
-                { namespaced_name = 'neovim/git/path_state' },
-            }
-        end,
-        http_endpoint = function()
-            return nil
-        end,
-        endpoint = function()
-            return {
-                command = 'nvim-mcp',
-                args = { '--stdio' },
-            }
-        end,
-    }
-
-    plugin.setup({
-        enable_mcp_nvim = true,
-        mcp_nvim_guidance = true,
-        mcp_servers = {},
-    })
-
-    package.loaded['legate.mcp.runtime'] = nil
-    package.loaded['legate.mcp.guidance'] = nil
-    local guidance = require('legate.mcp.guidance')
-    local prompt = guidance.prepend('hello', {
-        mcpCapabilities = {
-            tools = {
-                listChanged = true,
-            },
-        },
-    })
-
-    package.loaded['ministry'] = original_mcp
-
-    assert.is_true(prompt:find('tool path `git/...`', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/git/overview', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/git/list_refs', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/git/list_paths', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/git/path_state', 1, true) ~= nil)
-    assert.is_true(prompt:find('explicit-path repository questions', 1, true) ~= nil)
-    assert.is_false(prompt:find('neovim/git://overview', 1, true) ~= nil)
-    assert.is_false(prompt:find('before shelling out to `git`', 1, true) ~= nil)
-end)
-
-it('keeps Git resource and tool guidance separated by MCP capability family', function()
-    local original_mcp = package.loaded['ministry']
-
-    package.loaded['ministry'] = {
-        start_all = function()
-            return true
-        end,
-        list_resource_descriptors = function()
-            return {
-                { namespaced_uri = 'neovim/git://overview' },
-            }
-        end,
-        list_tool_descriptors = function()
-            return {
-                { namespaced_name = 'neovim/git/overview' },
-            }
-        end,
-        http_endpoint = function()
-            return nil
-        end,
-        endpoint = function()
-            return {
-                command = 'nvim-mcp',
-                args = { '--stdio' },
-            }
-        end,
-    }
-
-    plugin.setup({
-        enable_mcp_nvim = true,
-        mcp_nvim_guidance = true,
-        mcp_servers = {},
-    })
-
-    package.loaded['legate.mcp.runtime'] = nil
-    package.loaded['legate.mcp.guidance'] = nil
-    local guidance = require('legate.mcp.guidance')
-    local resources_prompt = guidance.prepend('hello', {
-        mcpCapabilities = {
-            resources = {
-                listChanged = true,
-            },
-        },
-    })
-    local tools_prompt = guidance.prepend('hello', {
-        mcpCapabilities = {
-            tools = {
-                listChanged = true,
-            },
-        },
-    })
-
-    package.loaded['ministry'] = original_mcp
-
-    assert.is_true(resources_prompt:find('neovim/git://overview', 1, true) ~= nil)
-    assert.is_false(resources_prompt:find('neovim/git/overview', 1, true) ~= nil)
-    assert.is_false(resources_prompt:find('tool path `git/...`', 1, true) ~= nil)
-    assert.is_true(tools_prompt:find('neovim/git/overview', 1, true) ~= nil)
-    assert.is_true(tools_prompt:find('tool path `git/...`', 1, true) ~= nil)
-    assert.is_false(tools_prompt:find('neovim/git://overview', 1, true) ~= nil)
-end)
-
-it('prepends DAP resource guidance only when debugger resources and templates are surfaced', function()
-    local original_mcp = package.loaded['ministry']
-
-    package.loaded['ministry'] = {
-        start_all = function()
-            return true
-        end,
-        list_resource_descriptors = function()
-            return {
-                { namespaced_uri = 'neovim/dap://summary' },
-                { namespaced_uri = 'neovim/dap://breakpoints' },
-                { namespaced_uri = 'neovim/dap://threads' },
-            }
-        end,
-        list_resource_template_descriptors = function()
-            return {
-                { namespaced_uri_template = 'neovim/dap://stack/{thread_id}' },
-                { namespaced_uri_template = 'neovim/dap://scopes/{frame_id}' },
-                { namespaced_uri_template = 'neovim/dap://variables/{variables_reference}' },
-            }
-        end,
-        http_endpoint = function()
-            return nil
-        end,
-        endpoint = function()
-            return {
-                command = 'nvim-mcp',
-                args = { '--stdio' },
-            }
-        end,
-    }
-
-    plugin.setup({
-        enable_mcp_nvim = true,
-        mcp_nvim_guidance = true,
-        mcp_servers = {},
-    })
-
-    package.loaded['legate.mcp.runtime'] = nil
-    package.loaded['legate.mcp.guidance'] = nil
-    local guidance = require('legate.mcp.guidance')
-    local prompt = guidance.prepend('hello', {
-        mcpCapabilities = {
-            resources = {
-                listChanged = true,
-            },
-        },
-    })
-
-    package.loaded['ministry'] = original_mcp
-
-    assert.is_true(prompt:find('neovim/dap://summary', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/dap://breakpoints', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/dap://threads', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/dap://stack/{thread_id}', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/dap://scopes/{frame_id}', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/dap://variables/{variables_reference}', 1, true) ~= nil)
-end)
-
-it('prepends DAP tool guidance only when debugger tools are surfaced', function()
-    local original_mcp = package.loaded['ministry']
-
-    package.loaded['ministry'] = {
-        start_all = function()
-            return true
-        end,
-        list_tool_descriptors = function()
-            return {
-                { namespaced_name = 'neovim/dap/continue' },
-                { namespaced_name = 'neovim/dap/pause' },
-                { namespaced_name = 'neovim/dap/step_over' },
-                { namespaced_name = 'neovim/dap/terminate' },
-            }
-        end,
-        http_endpoint = function()
-            return nil
-        end,
-        endpoint = function()
-            return {
-                command = 'nvim-mcp',
-                args = { '--stdio' },
-            }
-        end,
-    }
-
-    plugin.setup({
-        enable_mcp_nvim = true,
-        mcp_nvim_guidance = true,
-        mcp_servers = {},
-    })
-
-    package.loaded['legate.mcp.runtime'] = nil
-    package.loaded['legate.mcp.guidance'] = nil
-    local guidance = require('legate.mcp.guidance')
-    local prompt = guidance.prepend('hello', {
-        mcpCapabilities = {
-            tools = {
-                listChanged = true,
-            },
-        },
-    })
-
-    package.loaded['ministry'] = original_mcp
-
-    assert.is_true(prompt:find('tool path `dap/...`', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/dap/continue', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/dap/pause', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/dap/step_over', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/dap/terminate', 1, true) ~= nil)
-end)
-
-it('does not advertise terminal fallback guidance when ministry terminal tools are not surfaced', function()
-    local original_mcp = package.loaded['ministry']
-
-    package.loaded['ministry'] = {
-        start_all = function()
-            return true
-        end,
-        list_resource_descriptors = function()
-            return {
-                {
-                    namespaced_uri = 'neovim/workspace://summary',
-                },
-            }
-        end,
-        list_tool_descriptors = function()
-            return {
-                {
-                    namespaced_name = 'neovim/editor/list_buffers',
-                },
-            }
-        end,
-        http_endpoint = function()
-            return nil
-        end,
-        endpoint = function()
-            return {
-                command = 'nvim-mcp',
-                args = { '--stdio' },
-            }
-        end,
-    }
-
-    plugin.setup({
-        enable_mcp_nvim = true,
-        mcp_nvim_guidance = true,
-        mcp_servers = {},
-    })
-
-    package.loaded['legate.mcp.runtime'] = nil
-    package.loaded['legate.mcp.guidance'] = nil
-    local guidance = require('legate.mcp.guidance')
-    local prompt = guidance.prepend('hello', {
-        mcpCapabilities = {
-            tools = {
-                listChanged = true,
-            },
-            resources = {
-                listChanged = true,
-            },
-        },
-    })
-
-    package.loaded['ministry'] = original_mcp
-
-    assert.is_true(prompt:find('neovim/editor/list_buffers', 1, true) ~= nil)
-    assert.is_false(prompt:find('neovim/terminal/create', 1, true) ~= nil)
-    assert.is_false(prompt:find('neovim/terminal/wait', 1, true) ~= nil)
-    assert.is_false(prompt:find('tool path `editor/...` or `terminal/...`', 1, true) ~= nil)
-    assert.is_false(prompt:find('tool path `terminal/...`', 1, true) ~= nil)
-end)
-
-it('prepends terminal-summary guidance alongside terminal fallback guidance when both are surfaced', function()
-    local original_mcp = package.loaded['ministry']
-
-    package.loaded['ministry'] = {
-        start_all = function()
-            return true
-        end,
-        list_resource_descriptors = function()
-            return {
-                {
-                    namespaced_uri = 'neovim/terminals://list',
-                },
-            }
-        end,
-        list_tool_descriptors = function()
-            return {
-                {
-                    namespaced_name = 'neovim/terminal/create',
-                },
-                {
-                    namespaced_name = 'neovim/terminal/output',
-                },
-                {
-                    namespaced_name = 'neovim/terminal/release',
-                },
-            }
-        end,
-        http_endpoint = function()
-            return nil
-        end,
-        endpoint = function()
-            return {
-                command = 'nvim-mcp',
-                args = { '--stdio' },
-            }
-        end,
-    }
-
-    plugin.setup({
-        enable_mcp_nvim = true,
-        mcp_nvim_guidance = true,
-        mcp_servers = {},
-    })
-
-    package.loaded['legate.mcp.runtime'] = nil
-    package.loaded['legate.mcp.guidance'] = nil
-    local guidance = require('legate.mcp.guidance')
-    local prompt = guidance.prepend('hello', {
-        mcpCapabilities = {
-            resources = {
-                listChanged = true,
-            },
-            tools = {
-                listChanged = true,
-            },
-        },
-    })
-
-    package.loaded['ministry'] = original_mcp
-
-    assert.is_true(prompt:find('neovim/terminals://list', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/terminal/create', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/terminal/output', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/terminal/release', 1, true) ~= nil)
-end)
-
-it('does not advertise unsurfaced terminal names when only partial terminal tools are exposed', function()
-    local original_mcp = package.loaded['ministry']
-
-    package.loaded['ministry'] = {
-        start_all = function()
-            return true
-        end,
-        list_tool_descriptors = function()
-            return {
-                {
-                    namespaced_name = 'neovim/terminal/create',
-                },
-            }
-        end,
-        http_endpoint = function()
-            return nil
-        end,
-        endpoint = function()
-            return {
-                command = 'nvim-mcp',
-                args = { '--stdio' },
-            }
-        end,
-    }
-
-    plugin.setup({
-        enable_mcp_nvim = true,
-        mcp_nvim_guidance = true,
-        mcp_servers = {},
-    })
-
-    package.loaded['legate.mcp.runtime'] = nil
-    package.loaded['legate.mcp.guidance'] = nil
-    local guidance = require('legate.mcp.guidance')
-    local prompt = guidance.prepend('hello', {
-        mcpCapabilities = {
-            tools = {
-                listChanged = true,
-            },
-        },
-    })
-
-    package.loaded['ministry'] = original_mcp
-
-    assert.is_true(prompt:find('neovim/terminal/create', 1, true) ~= nil)
-    assert.is_false(prompt:find('neovim/terminal/output', 1, true) ~= nil)
-    assert.is_false(prompt:find('neovim/terminal/wait', 1, true) ~= nil)
-    assert.is_false(prompt:find('neovim/terminal/release', 1, true) ~= nil)
-    assert.is_true(prompt:find('tool path `terminal/...`', 1, true) ~= nil)
-end)
-
-it('explains split server/tool MCP routing for terminal fallback guidance', function()
-    local original_mcp = package.loaded['ministry']
-
-    package.loaded['ministry'] = {
-        start_all = function()
-            return true
-        end,
-        list_tool_descriptors = function()
-            return {
-                {
-                    namespaced_name = 'neovim/terminal/create',
-                },
-                {
-                    namespaced_name = 'neovim/terminal/output',
-                },
-                {
-                    namespaced_name = 'neovim/terminal/wait',
-                },
-                {
-                    namespaced_name = 'neovim/terminal/release',
-                },
-            }
-        end,
-        http_endpoint = function()
-            return nil
-        end,
-        endpoint = function()
-            return {
-                command = 'nvim-mcp',
-                args = { '--stdio' },
-            }
-        end,
-    }
-
-    plugin.setup({
-        enable_mcp_nvim = true,
-        mcp_nvim_guidance = true,
-        mcp_servers = {},
-    })
-
-    package.loaded['legate.mcp.runtime'] = nil
-    package.loaded['legate.mcp.guidance'] = nil
-    local guidance = require('legate.mcp.guidance')
-    local prompt = guidance.prepend('hello', {
-        mcpCapabilities = {
-            tools = {
-                listChanged = true,
-            },
-        },
-    })
-
-    package.loaded['ministry'] = original_mcp
-
-    assert.is_true(
-        prompt:find('Use fully qualified MCP tool names exactly as advertised by `tools/list`', 1, true) ~= nil
-    )
-    assert.is_true(
-        prompt:find(
-            'choose MCP server `neovim` and then tool path `terminal/...` without repeating the `neovim/` prefix inside the tool-path field',
-            1,
-            true
-        ) ~= nil
-    )
-    assert.is_true(
-        prompt:find(
-            'Do not execute shell commands through a generic execute tool when ACP terminal methods or `neovim/terminal/*` are available for the task.',
-            1,
-            true
-        ) ~= nil
-    )
-    assert.is_true(
-        prompt:find(
-            'If you still choose a non-terminal execution path, explicitly explain why the required terminal channels were unavailable before proceeding.',
-            1,
-            true
-        ) ~= nil
-    )
-end)
-
-it('explains split server/tool MCP routing across all surfaced tool groups', function()
-    local original_mcp = package.loaded['ministry']
-
-    package.loaded['ministry'] = {
-        start_all = function()
-            return true
-        end,
-        list_tool_descriptors = function()
-            return {
-                { namespaced_name = 'neovim/editor/list_buffers' },
-                { namespaced_name = 'neovim/terminal/create' },
-                { namespaced_name = 'neovim/git/overview' },
-                { namespaced_name = 'neovim/dap/continue' },
-            }
-        end,
-        http_endpoint = function()
-            return nil
-        end,
-        endpoint = function()
-            return {
-                command = 'nvim-mcp',
-                args = { '--stdio' },
-            }
-        end,
-    }
-
-    plugin.setup({
-        enable_mcp_nvim = true,
-        mcp_nvim_guidance = true,
-        mcp_servers = {},
-    })
-
-    package.loaded['legate.mcp.runtime'] = nil
-    package.loaded['legate.mcp.guidance'] = nil
-    local guidance = require('legate.mcp.guidance')
-    local prompt = guidance.prepend('hello', {
-        mcpCapabilities = {
-            tools = {
-                listChanged = true,
-            },
-        },
-    })
-
-    package.loaded['ministry'] = original_mcp
-
-    assert.is_true(
-        prompt:find(
-            'choose MCP server `neovim` and then tool path `editor/...`, `terminal/...`, `git/...`, or `dap/...` without repeating the `neovim/` prefix inside the tool-path field',
-            1,
-            true
-        ) ~= nil
-    )
-    assert.is_true(prompt:find('neovim/editor/list_buffers', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/terminal/create', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/git/overview', 1, true) ~= nil)
-    assert.is_true(prompt:find('neovim/dap/continue', 1, true) ~= nil)
+    assert.are.equal('Additional guidance for MCP server `neovim`:\nNEOVIM GUIDANCE\n\nhello', prompt)
 end)
 
 it('skips MCP guidance when the agent does not advertise MCP capabilities', function()
@@ -2155,6 +1309,63 @@ it('does not duplicate guidance on repeated decoration when ministry and plugin 
     assert.are.equal(once, twice)
 end)
 
+it('keeps Ministry guidance above adapter prompt preludes', function()
+    local original_mcp = package.loaded['ministry']
+
+    package.loaded['ministry'] = {
+        start_all = function()
+            return true
+        end,
+        list_server_guidance = function()
+            return {
+                {
+                    server = 'neovim',
+                    guidance = 'SERVER GUIDANCE',
+                },
+            }
+        end,
+        http_endpoint = function()
+            return nil
+        end,
+        endpoint = function()
+            return {
+                command = 'nvim-mcp',
+                args = { '--stdio' },
+            }
+        end,
+    }
+
+    plugin.setup({
+        enable_mcp_nvim = true,
+        mcp_nvim_guidance = true,
+        mcp_servers = {},
+        adapters = {
+            codex = {
+                command = { 'codex-acp' },
+                prompt_prelude = 'PROMPT PRELUDE',
+            },
+        },
+    })
+
+    package.loaded['legate.guidance.registry'] = nil
+    package.loaded['legate.mcp.runtime'] = nil
+    package.loaded['legate.mcp.guidance'] = nil
+    package.loaded['legate.core.prompt_pipeline'] = nil
+
+    local prompt_pipeline = require('legate.core.prompt_pipeline')
+    local prompt = prompt_pipeline.decorate('hello', {
+        mcpCapabilities = {
+            tools = {
+                listChanged = true,
+            },
+        },
+    }, nil)
+
+    package.loaded['ministry'] = original_mcp
+
+    assert.are.equal('Additional guidance for MCP server `neovim`:\nSERVER GUIDANCE\n\nPROMPT PRELUDE\n\nhello', prompt)
+end)
+
 it('unregisters guidance providers through the public API', function()
     local original_mcp = package.loaded['ministry']
     package.loaded['ministry'] = nil
@@ -2328,6 +1539,152 @@ it('auto-approves injected neovim terminal MCP permissions when the tool field i
     assert.are.equal('default', approvals[1].source)
     assert.are.equal('Allow once', approvals[1].selected_option_name)
     assert.is_true(vim.tbl_contains(lines, '✓ Approval [1] Tool: neovim/terminal/create'))
+end)
+
+it('uses Ministry approval policy for injected Neovim MCP editor permissions before inline selection', function()
+    local original_mcp = package.loaded['ministry']
+    local policy_queries = {}
+
+    package.loaded['ministry'] = {
+        list_tool_descriptors = function()
+            return {
+                {
+                    server = 'neovim',
+                    name = 'neovim/editor/read_buffer',
+                    namespaced_name = 'neovim/editor/read_buffer',
+                },
+                {
+                    server = 'neovim',
+                    name = 'neovim/editor/apply_diff_buffer',
+                    namespaced_name = 'neovim/editor/apply_diff_buffer',
+                },
+            }
+        end,
+        get_approval = function(server, method)
+            table.insert(policy_queries, { server = server, method = method })
+            if server == 'neovim' and method == 'editor/read_buffer' then
+                return 'allow'
+            end
+            if server == 'neovim' and method == 'editor/apply_diff_buffer' then
+                return 'ask'
+            end
+            return 'ask'
+        end,
+    }
+
+    local ok, err = xpcall(function()
+        local bufnr = api.open_chat()
+        local plugin = require('legate')
+
+        plugin.setup({
+            permission_strategy = 'select',
+        })
+
+        api.set_prompt('need editor permission')
+        api.submit_prompt()
+
+        local function approve_tool(tool_call_id, title, raw_input)
+            fake_client:emit_notification('session/update', {
+                sessionId = 'sess_123',
+                update = {
+                    sessionUpdate = 'tool_call',
+                    toolCallId = tool_call_id,
+                    title = title,
+                    status = 'pending',
+                    kind = 'read',
+                    rawInput = raw_input,
+                },
+            })
+
+            return fake_client:emit_request('session/request_permission', {
+                sessionId = 'sess_123',
+                toolCall = {
+                    toolCallId = tool_call_id,
+                },
+                options = {
+                    {
+                        optionId = 'allow-once',
+                        name = 'Allow once',
+                        kind = 'allow_once',
+                    },
+                    {
+                        optionId = 'reject-once',
+                        name = 'Reject',
+                        kind = 'reject_once',
+                    },
+                },
+            })
+        end
+
+        local read_response = approve_tool('call_read_policy', 'Tool: neovim/editor/read_buffer', {
+            server = 'neovim',
+            tool = 'neovim/editor/read_buffer',
+            arguments = {
+                bufnr = 1,
+            },
+        })
+        local apply_response = approve_tool('call_apply_policy', 'Tool: neovim/editor/apply_diff_buffer', {
+            method = 'mcp__neovim__editor__apply_diff_buffer',
+            arguments = {
+                bufnr = 1,
+                hunks = {},
+            },
+        })
+
+        local approvals = api.approvals()
+        local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+        assert.are.equal('selected', read_response.result.outcome.outcome)
+        assert.are.equal('allow-once', read_response.result.outcome.optionId)
+        assert.are.equal('selected', apply_response.result.outcome.outcome)
+        assert.are.equal('allow-once', apply_response.result.outcome.optionId)
+        assert.are.same({
+            { server = 'neovim', method = 'editor/read_buffer' },
+            { server = 'neovim', method = 'editor/apply_diff_buffer' },
+        }, policy_queries)
+        assert.are.equal(2, #approvals)
+        assert.are.equal('ministry', approvals[1].source)
+        assert.are.equal('ministry', approvals[2].source)
+        assert.are.equal('Allow once', approvals[1].selected_option_name)
+        assert.are.equal('Allow once', approvals[2].selected_option_name)
+        assert.is_nil(api.pending_approval())
+        local approval_lines = approval_virtual_lines(bufnr)
+        assert.are.same({}, approval_lines)
+        assert.is_true(vim.tbl_contains(lines, '✓ Approval [1] Tool: neovim/editor/read_buffer'))
+        assert.is_true(vim.tbl_contains(lines, '✓ Approval [2] Tool: neovim/editor/apply_diff_buffer'))
+    end, debug.traceback)
+
+    package.loaded['ministry'] = original_mcp
+
+    if not ok then
+        error(err)
+    end
+end)
+
+it('provides a runtimepath-discovered Ministry approval UI in the Legate chat buffer', function()
+    local provider = require('ministry.approval.providers.legate')
+    local bufnr = api.open_chat()
+
+    vim.schedule(function()
+        vim.api.nvim_set_current_buf(bufnr)
+        vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes('ga', true, false, true), 'x', false)
+    end)
+
+    local decision = provider.request({
+        server = 'neovim',
+        method = 'editor/read_buffer',
+        namespaced_name = 'neovim/editor/read_buffer',
+        arguments = {
+            bufnr = 1,
+        },
+        context = {},
+    })
+
+    local namespace = vim.api.nvim_get_namespaces()['ministry.approval.legate']
+    local marks = vim.api.nvim_buf_get_extmarks(bufnr, namespace, 0, -1, {})
+
+    assert.are.equal('allow', decision)
+    assert.are.same({}, marks)
 end)
 
 it('uses the configured permission policy hook before the default strategy', function()
@@ -3414,7 +2771,7 @@ it('rejects fs/read_text_file outside allowed roots', function()
     assert.is_true(response.error.message:match('allowed workspace root') ~= nil)
 end)
 
-it('writes file content via fs/write_text_file', function()
+it('writes file content via fs/write_text_file into a hidden buffer', function()
     local path = vim.fn.getcwd() .. '/tests/fixtures/write-file.txt'
     vim.fn.mkdir(vim.fn.fnamemodify(path, ':h'), 'p')
     os.remove(path)
@@ -3432,10 +2789,14 @@ it('writes file content via fs/write_text_file', function()
 
     assert.is_nil(response.error)
     assert.are.same({}, response.result)
-    assert.are.equal('hello\nworld\n', read_file(path))
+    local file_buf = vim.fn.bufnr(path)
+    assert.is_true(file_buf > 0)
+    assert.are.same({ 'hello', 'world' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
+    assert.is_true(vim.bo[file_buf].modified)
+    assert.is_false(vim.uv.fs_stat(path) ~= nil)
 end)
 
-it('rejects updating a modified open buffer via fs/write_text_file outside allowed roots', function()
+it('updates a modified open buffer via fs/write_text_file outside allowed roots', function()
     local path = temp_path('write-open-buffer.txt')
     local handle = assert(io.open(path, 'wb'))
     assert(handle:write('before\n'))
@@ -3455,39 +2816,14 @@ it('rejects updating a modified open buffer via fs/write_text_file outside allow
         content = 'after\nvalue\n',
     })
 
-    assert.is_not_nil(response.error)
-    assert.are.same({ 'before', 'draft change' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
+    assert.is_nil(response.error)
+    assert.are.same({ 'after', 'value' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
     assert.is_true(vim.bo[file_buf].modified)
     assert.are.equal('before\n', read_file(path))
 end)
 
-it('rejects reloading a modified open buffer for fs/write_text_file outside allowed roots', function()
-    local path = temp_path('write-open-buffer-undo.txt')
-    local handle = assert(io.open(path, 'wb'))
-    assert(handle:write('before\n'))
-    handle:close()
-
-    vim.cmd('edit ' .. vim.fn.fnameescape(path))
-    local file_buf = vim.api.nvim_get_current_buf()
-    vim.api.nvim_buf_set_lines(file_buf, 0, -1, false, { 'before', 'draft change' })
-
-    api.open_chat()
-    api.set_prompt('write through buffer without undo divergence')
-    api.submit_prompt()
-
-    local response = fake_client:emit_request('fs/write_text_file', {
-        sessionId = 'sess_123',
-        path = path,
-        content = 'after\nvalue\n',
-    })
-
-    assert.is_not_nil(response.error)
-    assert.are.same({ 'before', 'draft change' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
-    assert.is_true(vim.bo[file_buf].modified)
-end)
-
-it('reloads an open buffer for fs/write_text_file outside allowed roots when it is safe to synchronize', function()
-    local path = temp_path('write-open-buffer-reload.txt')
+it('updates an open buffer without writing or reloading the file', function()
+    local path = temp_path('write-open-buffer-buffer-first.txt')
     local handle = assert(io.open(path, 'wb'))
     assert(handle:write('alpha\nbeta\n'))
     handle:close()
@@ -3497,7 +2833,7 @@ it('reloads an open buffer for fs/write_text_file outside allowed roots when it 
     vim.bo[file_buf].fileformat = 'unix'
 
     api.open_chat()
-    api.set_prompt('write through buffer and reload file metadata')
+    api.set_prompt('write through buffer without touching disk')
     api.submit_prompt()
 
     local response = fake_client:emit_request('fs/write_text_file', {
@@ -3511,12 +2847,12 @@ it('reloads an open buffer for fs/write_text_file outside allowed roots when it 
         return line:gsub('\r$', '')
     end, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
     assert.are.same({ 'alpha', 'beta updated' }, file_lines)
-    assert.is_false(vim.bo[file_buf].modified)
-    assert.are.equal('dos', vim.bo[file_buf].fileformat)
-    assert.is_true(read_file(path):match('alpha\r\nbeta updated\r\n') ~= nil)
+    assert.is_true(vim.bo[file_buf].modified)
+    assert.are.equal('unix', vim.bo[file_buf].fileformat)
+    assert.are.equal('alpha\nbeta\n', read_file(path))
 end)
 
-it('reloads a hidden buffer for fs/write_text_file outside allowed roots when it is safe to synchronize', function()
+it('updates a hidden buffer without writing or reloading the file', function()
     local visible_path = temp_path('write-hidden-buffer-visible.txt')
     local visible_handle = assert(io.open(visible_path, 'wb'))
     assert(visible_handle:write('visible\n'))
@@ -3536,7 +2872,7 @@ it('reloads a hidden buffer for fs/write_text_file outside allowed roots when it
     local visible_buf = vim.api.nvim_get_current_buf()
 
     api.open_chat()
-    api.set_prompt('write through hidden buffer and reload file metadata')
+    api.set_prompt('write through hidden buffer without touching disk')
     api.submit_prompt()
 
     local response = fake_client:emit_request('fs/write_text_file', {
@@ -3550,10 +2886,10 @@ it('reloads a hidden buffer for fs/write_text_file outside allowed roots when it
         return line:gsub('\r$', '')
     end, vim.api.nvim_buf_get_lines(hidden_buf, 0, -1, false))
     assert.are.same({ 'alpha', 'beta updated' }, hidden_lines)
-    assert.is_false(vim.bo[hidden_buf].modified)
+    assert.is_true(vim.bo[hidden_buf].modified)
     assert.is_false(vim.bo[hidden_buf].modifiable)
-    assert.are.equal('dos', vim.bo[hidden_buf].fileformat)
-    assert.is_true(read_file(hidden_path):match('alpha\r\nbeta updated\r\n') ~= nil)
+    assert.are.equal('unix', vim.bo[hidden_buf].fileformat)
+    assert.are.equal('alpha\nbeta\n', read_file(hidden_path))
 end)
 
 it(
@@ -3592,10 +2928,11 @@ it(
         assert.is_nil(response.error)
         assert.are.equal(left_win, vim.api.nvim_get_current_win())
         assert.are.same({ 'right', 'after' }, vim.api.nvim_buf_get_lines(right_buf, 0, -1, false))
+        assert.are.equal('right\nbefore\n', read_file(right_path))
     end
 )
 
-it('reloads an open buffer shown in multiple windows outside allowed roots', function()
+it('updates an open buffer shown in multiple windows outside allowed roots', function()
     local left_path = temp_path('write-open-buffer-multi-window-left.txt')
     local left_handle = assert(io.open(left_path, 'wb'))
     assert(left_handle:write('left\n'))
@@ -3637,9 +2974,10 @@ it('reloads an open buffer shown in multiple windows outside allowed roots', fun
     assert.is_nil(response.error)
     assert.are.equal(left_win, vim.api.nvim_get_current_win())
     assert.are.same({ 'shared', 'after' }, vim.api.nvim_buf_get_lines(shared_buf, 0, -1, false))
+    assert.are.equal('shared\nbefore\n', read_file(shared_path))
 end)
 
-it('rejects fs/write_text_file before mutating disk when a hidden non-modifiable buffer has unsaved changes', function()
+it('updates a hidden non-modifiable buffer with unsaved changes without mutating disk', function()
     local visible_path = temp_path('write-hidden-nomodifiable-visible.txt')
     local visible_handle = assert(io.open(visible_path, 'wb'))
     assert(visible_handle:write('visible\n'))
@@ -3659,7 +2997,7 @@ it('rejects fs/write_text_file before mutating disk when a hidden non-modifiable
     vim.cmd('edit ' .. vim.fn.fnameescape(visible_path))
 
     api.open_chat()
-    api.set_prompt('reject write through hidden modified nomodifiable buffer')
+    api.set_prompt('write through hidden modified nomodifiable buffer')
     api.submit_prompt()
 
     local response = fake_client:emit_request('fs/write_text_file', {
@@ -3668,14 +3006,14 @@ it('rejects fs/write_text_file before mutating disk when a hidden non-modifiable
         content = 'after\nvalue\n',
     })
 
-    assert.is_not_nil(response.error)
-    assert.are.same({ 'local change' }, vim.api.nvim_buf_get_lines(hidden_buf, 0, -1, false))
+    assert.is_nil(response.error)
+    assert.are.same({ 'after', 'value' }, vim.api.nvim_buf_get_lines(hidden_buf, 0, -1, false))
     assert.is_true(vim.bo[hidden_buf].modified)
     assert.is_false(vim.bo[hidden_buf].modifiable)
     assert.are.equal('before\n', read_file(hidden_path))
 end)
 
-it('rejects fs/write_text_file before mutating disk when a hidden modifiable buffer has unsaved changes', function()
+it('updates a hidden modifiable buffer with unsaved changes without mutating disk', function()
     local visible_path = temp_path('write-hidden-modifiable-visible.txt')
     local visible_handle = assert(io.open(visible_path, 'wb'))
     assert(visible_handle:write('visible\n'))
@@ -3693,7 +3031,7 @@ it('rejects fs/write_text_file before mutating disk when a hidden modifiable buf
     vim.cmd('edit ' .. vim.fn.fnameescape(visible_path))
 
     api.open_chat()
-    api.set_prompt('reject write through hidden modified buffer')
+    api.set_prompt('write through hidden modified buffer')
     api.submit_prompt()
 
     local response = fake_client:emit_request('fs/write_text_file', {
@@ -3702,44 +3040,41 @@ it('rejects fs/write_text_file before mutating disk when a hidden modifiable buf
         content = 'after\nvalue\n',
     })
 
-    assert.is_not_nil(response.error)
-    assert.are.same({ 'local change' }, vim.api.nvim_buf_get_lines(hidden_buf, 0, -1, false))
+    assert.is_nil(response.error)
+    assert.are.same({ 'after', 'value' }, vim.api.nvim_buf_get_lines(hidden_buf, 0, -1, false))
     assert.is_true(vim.bo[hidden_buf].modified)
     assert.are.equal('before\n', read_file(hidden_path))
 end)
 
-it(
-    'rejects fs/write_text_file before mutating disk when a visible non-modifiable non-file buffer cannot be synchronized',
-    function()
-        local path = temp_path('write-nomodifiable-buffer.txt')
-        local handle = assert(io.open(path, 'wb'))
-        assert(handle:write('before\n'))
-        handle:close()
+it('updates a visible non-modifiable non-file buffer without mutating disk', function()
+    local path = temp_path('write-nomodifiable-buffer.txt')
+    local handle = assert(io.open(path, 'wb'))
+    assert(handle:write('before\n'))
+    handle:close()
 
-        vim.cmd('edit ' .. vim.fn.fnameescape(path))
-        local file_buf = vim.api.nvim_get_current_buf()
-        vim.bo[file_buf].modifiable = false
-        vim.bo[file_buf].buftype = 'nofile'
+    vim.cmd('edit ' .. vim.fn.fnameescape(path))
+    local file_buf = vim.api.nvim_get_current_buf()
+    vim.bo[file_buf].modifiable = false
+    vim.bo[file_buf].buftype = 'nofile'
 
-        api.open_chat()
-        api.set_prompt('write through nomodifiable buffer')
-        api.submit_prompt()
+    api.open_chat()
+    api.set_prompt('write through nomodifiable buffer')
+    api.submit_prompt()
 
-        local response = fake_client:emit_request('fs/write_text_file', {
-            sessionId = 'sess_123',
-            path = path,
-            content = 'after\nvalue\n',
-        })
+    local response = fake_client:emit_request('fs/write_text_file', {
+        sessionId = 'sess_123',
+        path = path,
+        content = 'after\nvalue\n',
+    })
 
-        assert.is_not_nil(response.error)
-        assert.are.same({ 'before' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
-        assert.is_false(vim.bo[file_buf].modified)
-        assert.is_false(vim.bo[file_buf].modifiable)
-        assert.are.equal('before\n', read_file(path))
-    end
-)
+    assert.is_nil(response.error)
+    assert.are.same({ 'after', 'value' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
+    assert.is_false(vim.bo[file_buf].modified)
+    assert.is_false(vim.bo[file_buf].modifiable)
+    assert.are.equal('before\n', read_file(path))
+end)
 
-it('rejects fs/write_text_file before mutating disk when hidden buffer synchronization would fail', function()
+it('preserves a hidden buffer and disk content when direct buffer mutation fails', function()
     local visible_path = temp_path('write-hidden-sync-visible.txt')
     local visible_handle = assert(io.open(visible_path, 'wb'))
     assert(visible_handle:write('visible\n'))
@@ -3758,14 +3093,14 @@ it('rejects fs/write_text_file before mutating disk when hidden buffer synchroni
     local original_set_lines = vim.api.nvim_buf_set_lines
     vim.api.nvim_buf_set_lines = function(bufnr, start, finish, strict, lines)
         if bufnr == hidden_buf then
-            error('sync failed')
+            error('buffer write failed')
         end
 
         return original_set_lines(bufnr, start, finish, strict, lines)
     end
 
     api.open_chat()
-    api.set_prompt('reject write when hidden buffer sync fails')
+    api.set_prompt('reject write when hidden buffer mutation fails')
     api.submit_prompt()
 
     local response = fake_client:emit_request('fs/write_text_file', {
@@ -3830,7 +3165,7 @@ it('allows empty fs/write_text_file content for an empty loaded buffer outside a
 
     assert.is_nil(response.error)
     assert.are.same({ '' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))
-    assert.is_false(vim.bo[file_buf].modified)
+    assert.is_true(vim.bo[file_buf].modified)
     assert.is_false(vim.bo[file_buf].modifiable)
     assert.are.equal('', read_file(path))
 end)
@@ -3956,12 +3291,12 @@ it('reads fs/read_text_file from a loaded buffer outside allowed roots', functio
     assert.are.equal('unsaved outside read\n', response.result.content)
 end)
 
-it('writes fs/write_text_file to a loaded buffer outside allowed roots when the buffer is synchronized', function()
+it('writes fs/write_text_file to a loaded buffer outside allowed roots without touching disk', function()
     local path = '/tmp/acp-fs-outside-loaded-write.txt'
     vim.fn.writefile({ 'outside write' }, path)
 
     api.open_chat()
-    api.set_prompt('reject outside loaded write')
+    api.set_prompt('write outside loaded buffer')
     api.submit_prompt()
 
     local file_buf = vim.fn.bufadd(path)
@@ -3973,12 +3308,16 @@ it('writes fs/write_text_file to a loaded buffer outside allowed roots when the 
         content = 'mutated outside\n',
     })
 
-    vim.api.nvim_buf_delete(file_buf, { force = true })
     local disk_lines = vim.fn.readfile(path)
+    local buffer_lines = vim.api.nvim_buf_get_lines(file_buf, 0, -1, false)
+    local modified = vim.bo[file_buf].modified
+    vim.api.nvim_buf_delete(file_buf, { force = true })
     os.remove(path)
 
     assert.is_nil(response.error)
-    assert.are.same({ 'mutated outside' }, disk_lines)
+    assert.are.same({ 'mutated outside' }, buffer_lines)
+    assert.is_true(modified)
+    assert.are.same({ 'outside write' }, disk_lines)
 end)
 
 it('creates a terminal and returns captured output', function()
@@ -4258,7 +3597,14 @@ it('preserves the existing open-buffer state when fs/write_text_file fails', fun
     local file_buf = vim.api.nvim_get_current_buf()
     vim.api.nvim_buf_set_lines(file_buf, 0, -1, false, { 'draft change' })
 
-    chmod(root, '0555')
+    local original_set_lines = vim.api.nvim_buf_set_lines
+    vim.api.nvim_buf_set_lines = function(bufnr, start, finish, strict, lines)
+        if bufnr == file_buf then
+            error('buffer write failed')
+        end
+
+        return original_set_lines(bufnr, start, finish, strict, lines)
+    end
 
     api.open_chat()
     api.set_prompt('fail to write through buffer')
@@ -4270,7 +3616,7 @@ it('preserves the existing open-buffer state when fs/write_text_file fails', fun
         content = 'after\nvalue\n',
     })
 
-    chmod(root, '0755')
+    vim.api.nvim_buf_set_lines = original_set_lines
 
     assert.is_not_nil(response.error)
     assert.are.same({ 'draft change' }, vim.api.nvim_buf_get_lines(file_buf, 0, -1, false))

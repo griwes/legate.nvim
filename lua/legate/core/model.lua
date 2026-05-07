@@ -35,6 +35,8 @@
 
 ---@alias legate.PermissionStrategy
 ---| 'default'
+---| 'ministry'
+---| 'policy'
 ---| 'select'
 
 ---@alias legate.SessionConfigOptionType

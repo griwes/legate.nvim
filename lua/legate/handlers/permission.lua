@@ -52,6 +52,21 @@ local function raw_mcp_target(raw_input)
         or non_empty_string(raw_input.tool_name)
         or non_empty_string(raw_input.name)
 
+    local method = non_empty_string(raw_input.method)
+    if (server_name == nil or tool_name == nil) and method ~= nil and vim.startswith(method, 'mcp__') then
+        local parts = vim.split(method, '__', { plain = true })
+        if #parts >= 3 then
+            server_name = server_name or parts[2]
+            tool_name = tool_name or table.concat(vim.list_slice(parts, 3), '/')
+        end
+    end
+
+    if server_name == nil and type(tool_name) == 'string' then
+        local inferred_server, inferred_tool = tool_name:match('^([^/]+)/([^/]+/.+)$')
+        server_name = inferred_server
+        tool_name = inferred_tool or tool_name
+    end
+
     return server_name, tool_name
 end
 
@@ -85,6 +100,108 @@ local function is_injected_neovim_terminal_permission(tool_call, permission)
     local title = non_empty_string(permission.toolCall.title) or non_empty_string(tool_call and tool_call.title or nil)
 
     return type(title) == 'string' and title:find('neovim/terminal/', 1, true) ~= nil
+end
+
+---@param tool_call legate.ToolCallState?
+---@param permission legate.PermissionRequest
+---@return string?, string?
+local function permission_mcp_target(tool_call, permission)
+    local server_name, tool_name = normalized_mcp_target(raw_mcp_target(tool_call and tool_call.raw_input or nil))
+
+    if server_name ~= nil and tool_name ~= nil then
+        return server_name, tool_name
+    end
+
+    local permission_tool_call = type(permission.toolCall) == 'table' and permission.toolCall or {}
+    server_name, tool_name =
+        normalized_mcp_target(raw_mcp_target(permission_tool_call.rawInput or permission_tool_call.raw_input))
+
+    return server_name, tool_name
+end
+
+---@param decision 'allow'|'reject'
+---@param options legate.PermissionOption[]
+---@return legate.PermissionOutcome?
+local function permission_outcome_from_ministry_decision(decision, options)
+    local option = nil
+
+    if decision == 'allow' then
+        option = find_permission_option('allow_once', options) or find_permission_option('allow_always', options)
+    elseif decision == 'reject' then
+        option = find_permission_option('reject_once', options) or find_permission_option('reject_always', options)
+    end
+
+    if option == nil then
+        return nil
+    end
+
+    return {
+        outcome = 'selected',
+        optionId = option.optionId,
+    }
+end
+
+---@param ministry table
+---@param server_name string
+---@param tool_name string
+---@return boolean
+local function ministry_advertises_tool(ministry, server_name, tool_name)
+    if type(ministry.list_tool_descriptors) ~= 'function' then
+        return false
+    end
+
+    local ok, descriptors = pcall(ministry.list_tool_descriptors)
+    if not ok or type(descriptors) ~= 'table' then
+        return false
+    end
+
+    local namespaced_name = string.format('%s/%s', server_name, tool_name)
+
+    for _, descriptor in ipairs(descriptors) do
+        if
+            type(descriptor) == 'table'
+            and (
+                descriptor.namespaced_name == namespaced_name
+                or descriptor.name == namespaced_name
+                or (descriptor.server == server_name and descriptor.name == tool_name)
+            )
+        then
+            return true
+        end
+    end
+
+    return false
+end
+
+---@param ctx legate.TransportContext
+---@param current_session legate.Session
+---@param permission legate.PermissionRequest
+---@return legate.PermissionOutcome?
+local function ministry_permission_outcome(ctx, current_session, permission)
+    local matched_tool_call = ctx.session.tool_call_by_id(current_session, permission.toolCall.toolCallId)
+    local server_name, tool_name = permission_mcp_target(matched_tool_call, permission)
+
+    if server_name == nil or tool_name == nil then
+        return nil
+    end
+
+    local ok, ministry = pcall(require, 'ministry')
+    if not ok or type(ministry.get_approval) ~= 'function' then
+        return nil
+    end
+
+    if not ministry_advertises_tool(ministry, server_name, tool_name) then
+        return nil
+    end
+
+    local policy_ok, decision = pcall(ministry.get_approval, server_name, tool_name)
+    if not policy_ok or (decision ~= 'allow' and decision ~= 'reject' and decision ~= 'ask') then
+        return nil
+    end
+
+    -- Ministry `ask` needs the ACP seam to pass so Ministry can prompt with the
+    -- full MCP payload at tools/call time.
+    return permission_outcome_from_ministry_decision(decision == 'reject' and 'reject' or 'allow', permission.options)
 end
 
 ---@param ctx legate.TransportContext
@@ -297,6 +414,17 @@ function M.handle_request(ctx, generation, permission, respond)
         ctx.rerender(current_session)
         respond({
             outcome = policy_outcome,
+        })
+        return
+    end
+
+    local ministry_outcome = ministry_permission_outcome(ctx, current_session, permission)
+
+    if ministry_outcome ~= nil then
+        ctx.session.record_approval(current_session, permission, ministry_outcome, 'ministry')
+        ctx.rerender(current_session)
+        respond({
+            outcome = ministry_outcome,
         })
         return
     end

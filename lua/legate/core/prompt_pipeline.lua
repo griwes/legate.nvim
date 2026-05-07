@@ -28,6 +28,9 @@ function M.decorate(prompt, agent_capabilities, current_session)
     adapter.name = config.session_adapter_name(current_session)
     local decorated = prompt
     local guidance_blocks = {}
+
+    decorated = prepend_once(decorated, adapter.prompt_prelude)
+
     local mcp_block = mcp_guidance.guidance(current_session, agent_capabilities)
     local plugin_guidance = guidance_registry.compose({
         adapter = adapter,
@@ -44,8 +47,6 @@ function M.decorate(prompt, agent_capabilities, current_session)
     if #guidance_blocks > 0 then
         decorated = prepend_once(decorated, table.concat(guidance_blocks, '\n\n'))
     end
-
-    decorated = prepend_once(decorated, adapter.prompt_prelude)
 
     if adapter.prompt_decorator ~= nil then
         local next_prompt = adapter.prompt_decorator(decorated, adapter, current_session, agent_capabilities)

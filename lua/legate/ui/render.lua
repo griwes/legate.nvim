@@ -93,6 +93,7 @@ local function format_message(current_session, message)
     local title = message.role:sub(1, 1):upper() .. message.role:sub(2)
     local lines = {
         string.format('### %s', title),
+        '',
     }
 
     for _, line in

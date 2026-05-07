@@ -92,8 +92,8 @@ Example local `lazy.nvim` spec:
 - ACP can now auto-inject the live `ministry.nvim` endpoint into its configured `mcp_servers` list when `enable_mcp_nvim = true` (opt-in)
 - ACP adapter config can now also add MCPHub proxy integration declaratively through `enable_mcphub = true`
 - this gives ACP/Codex a stable local MCP surface for buffer-id/file-path-based edits and terminal lifecycle routing, while still leaving ACP-native terminal methods available when the agent actually uses them
-- ACP can now also prepend `neovim` MCP routing guidance into submitted prompts when `mcp_nvim_guidance = true` (default)
-- that guidance is capability- and surface-aware: it only mentions `neovim/workspace://summary` and `neovim/terminals://list` when MCP resources are enabled and the injected Ministry surface advertises those resources, prefers the identifier-based `neovim/editor/...` tools when MCP tools are enabled, and only mentions `neovim/terminal/...` fallback when those terminal tools are actually surfaced
+- ACP can now also prepend Ministry-owned `neovim` MCP routing guidance into submitted prompts when `mcp_nvim_guidance = true` (default)
+- Legate forwards guidance advertised by Ministry servers instead of synthesizing Ministry tool/resource instructions itself, keeping prompt decoration in ACP and tool-specific guidance in the server that owns the tools
 - ACP does not invent a separate terminal proxy server for this fallback; the only intended MCP fallback is the existing `ministry.nvim` `neovim/terminal/*` surface
 - follow-up turns rebind the transport channel between prompts to fail closed on stale cross-turn updates
 - when the agent advertises `loadSession`, follow-up turns resume the existing remote ACP session with `session/load`

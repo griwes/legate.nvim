@@ -179,6 +179,35 @@ it('keeps a blank line between the transcript header and the first message heade
     assert.are.equal('### User', lines[transcript_header_line + 2])
 end)
 
+it('keeps a blank line after transcript message headings', function()
+    local bufnr = api.open_chat()
+
+    api.set_prompt('hello from ACP')
+    api.submit_prompt()
+
+    fake_client:emit_notification('session/update', {
+        sessionId = 'sess_123',
+        update = {
+            sessionUpdate = 'agent_message_chunk',
+            content = {
+                type = 'text',
+                text = 'assistant reply',
+            },
+        },
+    })
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    local user_heading = vim.fn.index(lines, '### User') + 1
+    local assistant_heading = vim.fn.index(lines, '### Assistant') + 1
+
+    assert.is_true(user_heading > 0)
+    assert.are.equal('', lines[user_heading + 1])
+    assert.are.equal('hello from ACP', lines[user_heading + 2])
+    assert.is_true(assistant_heading > 0)
+    assert.are.equal('', lines[assistant_heading + 1])
+    assert.are.equal('assistant reply', lines[assistant_heading + 2])
+end)
+
 it('names the ACP chat buffer with a parseable session locator', function()
     local bufnr = api.open_chat()
     local current_session = api.current_session()
