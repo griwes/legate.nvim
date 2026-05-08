@@ -1544,6 +1544,7 @@ end)
 it('uses Ministry approval policy for injected Neovim MCP editor permissions before inline selection', function()
     local original_mcp = package.loaded['ministry']
     local policy_queries = {}
+    local preapprovals = {}
 
     package.loaded['ministry'] = {
         list_tool_descriptors = function()
@@ -1558,6 +1559,11 @@ it('uses Ministry approval policy for injected Neovim MCP editor permissions bef
                     name = 'neovim/editor/apply_diff_buffer',
                     namespaced_name = 'neovim/editor/apply_diff_buffer',
                 },
+                {
+                    server = 'neovim',
+                    name = 'neovim/editor/write_buffer',
+                    namespaced_name = 'neovim/editor/write_buffer',
+                },
             }
         end,
         get_approval = function(server, method)
@@ -1569,6 +1575,15 @@ it('uses Ministry approval policy for injected Neovim MCP editor permissions bef
                 return 'ask'
             end
             return 'ask'
+        end,
+        approve_once = function(server, method, arguments, context)
+            table.insert(preapprovals, {
+                server = server,
+                method = method,
+                arguments = arguments,
+                context = context,
+            })
+            return true
         end,
     }
 
@@ -1596,7 +1611,7 @@ it('uses Ministry approval policy for injected Neovim MCP editor permissions bef
                 },
             })
 
-            return fake_client:emit_request('session/request_permission', {
+            local params = {
                 sessionId = 'sess_123',
                 toolCall = {
                     toolCallId = tool_call_id,
@@ -1613,7 +1628,13 @@ it('uses Ministry approval policy for injected Neovim MCP editor permissions bef
                         kind = 'reject_once',
                     },
                 },
-            })
+            }
+
+            if tool_call_id == 'call_read_policy' then
+                return fake_client:emit_request('session/request_permission', params)
+            end
+
+            return begin_permission_request(params)
         end
 
         local read_response = approve_tool('call_read_policy', 'Tool: neovim/editor/read_buffer', {
@@ -1630,28 +1651,62 @@ it('uses Ministry approval policy for injected Neovim MCP editor permissions bef
                 hunks = {},
             },
         })
+        assert.is_nil(apply_response())
+        api.select_approval_option('allow-once')
+
+        local write_response = approve_tool('call_write_policy', 'Tool: neovim/editor/write_buffer', {
+            server = 'neovim',
+            tool = 'neovim/editor/write_buffer',
+            arguments = {
+                bufnr = 1,
+                content = 'after\n',
+            },
+        })
+        assert.is_nil(write_response())
+        api.select_approval_option('reject-once')
 
         local approvals = api.approvals()
         local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+        local local_session_id = api.current_session().id
 
         assert.are.equal('selected', read_response.result.outcome.outcome)
         assert.are.equal('allow-once', read_response.result.outcome.optionId)
-        assert.are.equal('selected', apply_response.result.outcome.outcome)
-        assert.are.equal('allow-once', apply_response.result.outcome.optionId)
+        assert.are.equal('selected', apply_response().result.outcome.outcome)
+        assert.are.equal('allow-once', apply_response().result.outcome.optionId)
+        assert.are.equal('selected', write_response().result.outcome.outcome)
+        assert.are.equal('reject-once', write_response().result.outcome.optionId)
         assert.are.same({
             { server = 'neovim', method = 'editor/read_buffer' },
             { server = 'neovim', method = 'editor/apply_diff_buffer' },
+            { server = 'neovim', method = 'editor/write_buffer' },
         }, policy_queries)
-        assert.are.equal(2, #approvals)
+        assert.are.same({
+            {
+                server = 'neovim',
+                method = 'editor/apply_diff_buffer',
+                arguments = {
+                    bufnr = 1,
+                    hunks = {},
+                },
+                context = {
+                    legate_session_id = local_session_id,
+                    tool_call_id = 'call_apply_policy',
+                },
+            },
+        }, preapprovals)
+        assert.are.equal(3, #approvals)
         assert.are.equal('ministry', approvals[1].source)
         assert.are.equal('ministry', approvals[2].source)
+        assert.are.equal('ministry', approvals[3].source)
         assert.are.equal('Allow once', approvals[1].selected_option_name)
         assert.are.equal('Allow once', approvals[2].selected_option_name)
+        assert.are.equal('Reject', approvals[3].selected_option_name)
         assert.is_nil(api.pending_approval())
         local approval_lines = approval_virtual_lines(bufnr)
         assert.are.same({}, approval_lines)
         assert.is_true(vim.tbl_contains(lines, '✓ Approval [1] Tool: neovim/editor/read_buffer'))
         assert.is_true(vim.tbl_contains(lines, '✓ Approval [2] Tool: neovim/editor/apply_diff_buffer'))
+        assert.is_true(vim.tbl_contains(lines, '✗ Approval [3] Tool: neovim/editor/write_buffer'))
     end, debug.traceback)
 
     package.loaded['ministry'] = original_mcp
@@ -1661,14 +1716,320 @@ it('uses Ministry approval policy for injected Neovim MCP editor permissions bef
     end
 end)
 
-it('provides a runtimepath-discovered Ministry approval UI in the Legate chat buffer', function()
+it('prefers Ministry ask decisions over the generic Legate permission policy for Ministry-owned tools', function()
+    local original_mcp = package.loaded['ministry']
+    local policy_called = false
+    local preapprovals = {}
+
+    package.loaded['ministry'] = {
+        list_tool_descriptors = function()
+            return {
+                {
+                    server = 'neovim',
+                    name = 'neovim/editor/apply_diff_buffer',
+                    namespaced_name = 'neovim/editor/apply_diff_buffer',
+                },
+            }
+        end,
+        get_approval = function(server, method)
+            assert.are.equal('neovim', server)
+            assert.are.equal('editor/apply_diff_buffer', method)
+            return 'ask'
+        end,
+        approve_once = function(server, method, arguments, context)
+            table.insert(preapprovals, {
+                server = server,
+                method = method,
+                arguments = arguments,
+                context = context,
+            })
+            return true
+        end,
+    }
+
+    local ok, err = xpcall(function()
+        local plugin = require('legate')
+
+        plugin.setup({
+            permission_strategy = 'select',
+            permission_policy = function()
+                policy_called = true
+                return 'allow_once'
+            end,
+        })
+
+        api.set_prompt('need ministry ask permission')
+        api.submit_prompt()
+
+        fake_client:emit_notification('session/update', {
+            sessionId = 'sess_123',
+            update = {
+                sessionUpdate = 'tool_call',
+                toolCallId = 'call_ministry_ask_policy',
+                title = 'Tool: neovim/editor/apply_diff_buffer',
+                status = 'pending',
+                kind = 'edit',
+                rawInput = {
+                    server = 'neovim',
+                    tool = 'neovim/editor/apply_diff_buffer',
+                    arguments = {
+                        bufnr = 1,
+                        hunks = {},
+                    },
+                },
+            },
+        })
+
+        local response = begin_permission_request({
+            sessionId = 'sess_123',
+            toolCall = {
+                toolCallId = 'call_ministry_ask_policy',
+            },
+            options = {
+                {
+                    optionId = 'allow-once',
+                    name = 'Allow once',
+                    kind = 'allow_once',
+                },
+                {
+                    optionId = 'reject-once',
+                    name = 'Reject',
+                    kind = 'reject_once',
+                },
+            },
+        })
+
+        local local_session_id = api.current_session().id
+
+        assert.is_nil(response())
+        assert.are.equal('call_ministry_ask_policy', api.pending_approval().tool_call_id)
+        assert.is_false(policy_called)
+        assert.are.same({}, preapprovals)
+        api.select_approval_option('allow-once')
+        assert.are.equal('selected', response().result.outcome.outcome)
+        assert.are.equal('allow-once', response().result.outcome.optionId)
+        assert.are.same({
+            {
+                server = 'neovim',
+                method = 'editor/apply_diff_buffer',
+                arguments = {
+                    bufnr = 1,
+                    hunks = {},
+                },
+                context = {
+                    legate_session_id = local_session_id,
+                    tool_call_id = 'call_ministry_ask_policy',
+                },
+            },
+        }, preapprovals)
+
+        local approvals = api.approvals()
+        assert.are.equal(1, #approvals)
+        assert.are.equal('ministry', approvals[1].source)
+        assert.are.equal('Allow once', approvals[1].selected_option_name)
+        assert.is_nil(api.pending_approval())
+    end, debug.traceback)
+
+    package.loaded['ministry'] = original_mcp
+
+    if not ok then
+        error(err)
+    end
+end)
+
+it('routes title-only Ministry permission requests to Ministry instead of generic inline approval', function()
+    local original_mcp = package.loaded['ministry']
+    local policy_called = false
+    local preapprovals = {}
+
+    package.loaded['ministry'] = {
+        list_tool_descriptors = function()
+            return {
+                {
+                    server = 'neovim',
+                    name = 'neovim/editor/apply_diff_buffer',
+                    namespaced_name = 'neovim/editor/apply_diff_buffer',
+                },
+            }
+        end,
+        get_approval = function(server, method)
+            assert.are.equal('neovim', server)
+            assert.are.equal('editor/apply_diff_buffer', method)
+            return 'ask'
+        end,
+        approve_once = function(server, method, arguments, context)
+            table.insert(preapprovals, {
+                server = server,
+                method = method,
+                arguments = arguments,
+                context = context,
+            })
+            return true
+        end,
+    }
+
+    local ok, err = xpcall(function()
+        local plugin = require('legate')
+
+        plugin.setup({
+            permission_strategy = 'select',
+            permission_policy = function()
+                policy_called = true
+                return 'allow_once'
+            end,
+        })
+
+        api.set_prompt('need title-only ministry permission')
+        api.submit_prompt()
+
+        local response = begin_permission_request({
+            sessionId = 'sess_123',
+            toolCall = {
+                toolCallId = 'call_title_only_ministry',
+                title = 'Tool: neovim/editor/apply_diff_buffer',
+            },
+            options = {
+                {
+                    optionId = 'allow-once',
+                    name = 'Allow once',
+                    kind = 'allow_once',
+                },
+                {
+                    optionId = 'reject-once',
+                    name = 'Reject',
+                    kind = 'reject_once',
+                },
+            },
+        })
+
+        local local_session_id = api.current_session().id
+
+        assert.is_nil(response())
+        assert.are.equal('call_title_only_ministry', api.pending_approval().tool_call_id)
+        assert.is_false(policy_called)
+        assert.are.same({}, preapprovals)
+        api.select_approval_option('reject-once')
+        assert.are.equal('selected', response().result.outcome.outcome)
+        assert.are.equal('reject-once', response().result.outcome.optionId)
+        assert.are.equal(local_session_id, api.current_session().id)
+        assert.are.same({}, preapprovals)
+
+        local approvals = api.approvals()
+        assert.are.equal(1, #approvals)
+        assert.are.equal('ministry', approvals[1].source)
+        assert.are.equal('Reject', approvals[1].selected_option_name)
+        assert.is_nil(api.pending_approval())
+    end, debug.traceback)
+
+    package.loaded['ministry'] = original_mcp
+
+    if not ok then
+        error(err)
+    end
+end)
+
+it('matches Ministry permissions from advertised descriptor names embedded in ACP titles', function()
+    local original_mcp = package.loaded['ministry']
+    local policy_called = false
+    local preapprovals = {}
+
+    package.loaded['ministry'] = {
+        list_tool_descriptors = function()
+            return {
+                {
+                    server = 'neovim',
+                    name = 'neovim/lsp/workspace_symbols',
+                    namespaced_name = 'neovim/lsp/workspace_symbols',
+                },
+            }
+        end,
+        get_approval = function(server, method)
+            assert.are.equal('neovim', server)
+            assert.are.equal('lsp/workspace_symbols', method)
+            return 'ask'
+        end,
+        approve_once = function(server, method, arguments, context)
+            table.insert(preapprovals, {
+                server = server,
+                method = method,
+                arguments = arguments,
+                context = context,
+            })
+            return true
+        end,
+    }
+
+    local ok, err = xpcall(function()
+        local plugin = require('legate')
+
+        plugin.setup({
+            permission_strategy = 'select',
+            permission_policy = function()
+                policy_called = true
+                return 'allow_once'
+            end,
+        })
+
+        api.set_prompt('need descriptor title ministry permission')
+        api.submit_prompt()
+
+        local response = begin_permission_request({
+            sessionId = 'sess_123',
+            toolCall = {
+                toolCallId = 'call_descriptor_title_ministry',
+                title = 'Allow tool call neovim/lsp/workspace_symbols?',
+            },
+            options = {
+                {
+                    optionId = 'allow-once',
+                    name = 'Allow once',
+                    kind = 'allow_once',
+                },
+                {
+                    optionId = 'reject-once',
+                    name = 'Reject',
+                    kind = 'reject_once',
+                },
+            },
+        })
+
+        local local_session_id = api.current_session().id
+
+        assert.is_nil(response())
+        assert.are.equal('call_descriptor_title_ministry', api.pending_approval().tool_call_id)
+        assert.is_false(policy_called)
+        api.select_approval_option('allow-once')
+        assert.are.equal('selected', response().result.outcome.outcome)
+        assert.are.equal('allow-once', response().result.outcome.optionId)
+        assert.are.same({
+            {
+                server = 'neovim',
+                method = 'lsp/workspace_symbols',
+                arguments = {},
+                context = {
+                    legate_session_id = local_session_id,
+                    tool_call_id = 'call_descriptor_title_ministry',
+                },
+            },
+        }, preapprovals)
+
+        local approvals = api.approvals()
+        assert.are.equal(1, #approvals)
+        assert.are.equal('ministry', approvals[1].source)
+        assert.are.equal('Allow once', approvals[1].selected_option_name)
+        assert.is_nil(api.pending_approval())
+    end, debug.traceback)
+
+    package.loaded['ministry'] = original_mcp
+
+    if not ok then
+        error(err)
+    end
+end)
+
+it('does not block in the runtimepath-discovered Ministry approval provider', function()
     local provider = require('ministry.approval.providers.legate')
     local bufnr = api.open_chat()
-
-    vim.schedule(function()
-        vim.api.nvim_set_current_buf(bufnr)
-        vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes('ga', true, false, true), 'x', false)
-    end)
 
     local decision = provider.request({
         server = 'neovim',
@@ -1681,10 +2042,12 @@ it('provides a runtimepath-discovered Ministry approval UI in the Legate chat bu
     })
 
     local namespace = vim.api.nvim_get_namespaces()['ministry.approval.legate']
-    local marks = vim.api.nvim_buf_get_extmarks(bufnr, namespace, 0, -1, {})
 
-    assert.are.equal('allow', decision)
-    assert.are.same({}, marks)
+    assert.is_nil(decision)
+    if namespace ~= nil then
+        local marks = vim.api.nvim_buf_get_extmarks(bufnr, namespace, 0, -1, {})
+        assert.are.same({}, marks)
+    end
 end)
 
 it('uses the configured permission policy hook before the default strategy', function()

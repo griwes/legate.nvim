@@ -70,6 +70,36 @@ local function raw_mcp_target(raw_input)
     return server_name, tool_name
 end
 
+---@param title string?
+---@return string?, string?
+local function title_mcp_target(title)
+    title = non_empty_string(title)
+    if title == nil then
+        return nil, nil
+    end
+
+    local target = title:match('^Tool:%s*(.+)$') or title
+    if target:match('%s') then
+        return nil, nil
+    end
+
+    if vim.startswith(target, 'mcp__') then
+        return raw_mcp_target({ method = target })
+    end
+
+    return raw_mcp_target({ name = target })
+end
+
+---@param raw_input table?
+---@return table
+local function raw_mcp_arguments(raw_input)
+    if type(raw_input) == 'table' and type(raw_input.arguments) == 'table' then
+        return raw_input.arguments
+    end
+
+    return {}
+end
+
 ---@param server_name string?
 ---@param tool_name string?
 ---@return string?, string?
@@ -116,7 +146,32 @@ local function permission_mcp_target(tool_call, permission)
     server_name, tool_name =
         normalized_mcp_target(raw_mcp_target(permission_tool_call.rawInput or permission_tool_call.raw_input))
 
+    if server_name ~= nil and tool_name ~= nil then
+        return server_name, tool_name
+    end
+
+    server_name, tool_name = normalized_mcp_target(title_mcp_target(permission_tool_call.title))
+    if server_name ~= nil and tool_name ~= nil then
+        return server_name, tool_name
+    end
+
+    server_name, tool_name = normalized_mcp_target(title_mcp_target(tool_call and tool_call.title or nil))
+
     return server_name, tool_name
+end
+
+---@param tool_call legate.ToolCallState?
+---@param permission legate.PermissionRequest
+---@return table
+local function permission_mcp_arguments(tool_call, permission)
+    local arguments = raw_mcp_arguments(tool_call and tool_call.raw_input or nil)
+
+    if next(arguments) ~= nil then
+        return arguments
+    end
+
+    local permission_tool_call = type(permission.toolCall) == 'table' and permission.toolCall or {}
+    return raw_mcp_arguments(permission_tool_call.rawInput or permission_tool_call.raw_input)
 end
 
 ---@param decision 'allow'|'reject'
@@ -173,20 +228,102 @@ local function ministry_advertises_tool(ministry, server_name, tool_name)
     return false
 end
 
+---@param descriptor table
+---@return string?, string?
+local function descriptor_mcp_target(descriptor)
+    local server_name = non_empty_string(descriptor.server)
+    local namespaced_name = non_empty_string(descriptor.namespaced_name) or non_empty_string(descriptor.name)
+    local tool_name = nil
+
+    if server_name ~= nil and namespaced_name ~= nil then
+        local prefix = server_name .. '/'
+        if vim.startswith(namespaced_name, prefix) then
+            tool_name = namespaced_name:sub(#prefix + 1)
+        end
+    end
+
+    if server_name == nil and namespaced_name ~= nil then
+        server_name, tool_name = namespaced_name:match('^([^/]+)/(.+)$')
+    end
+
+    if tool_name == nil then
+        tool_name = non_empty_string(descriptor.tool) or non_empty_string(descriptor.toolName)
+    end
+
+    return normalized_mcp_target(server_name, tool_name)
+end
+
+---@param server_name string
+---@param tool_name string
+---@return string
+local function mcp_method_name(server_name, tool_name)
+    return string.format('mcp__%s__%s', server_name, tool_name:gsub('/', '__'))
+end
+
+---@param haystack string?
+---@param needle string
+---@return boolean
+local function contains_literal(haystack, needle)
+    return type(haystack) == 'string' and haystack:find(needle, 1, true) ~= nil
+end
+
+---@param ministry table
+---@param tool_call legate.ToolCallState?
+---@param permission legate.PermissionRequest
+---@return string?, string?
+local function descriptor_permission_target(ministry, tool_call, permission)
+    if type(ministry.list_tool_descriptors) ~= 'function' then
+        return nil, nil
+    end
+
+    local ok, descriptors = pcall(ministry.list_tool_descriptors)
+    if not ok or type(descriptors) ~= 'table' then
+        return nil, nil
+    end
+
+    local permission_tool_call = type(permission.toolCall) == 'table' and permission.toolCall or {}
+    local title = non_empty_string(permission_tool_call.title) or non_empty_string(tool_call and tool_call.title or nil)
+
+    if title == nil then
+        return nil, nil
+    end
+
+    for _, descriptor in ipairs(descriptors) do
+        if type(descriptor) == 'table' then
+            local server_name, tool_name = descriptor_mcp_target(descriptor)
+            if server_name ~= nil and tool_name ~= nil then
+                local namespaced_name = string.format('%s/%s', server_name, tool_name)
+                if
+                    contains_literal(title, namespaced_name)
+                    or contains_literal(title, mcp_method_name(server_name, tool_name))
+                then
+                    return server_name, tool_name
+                end
+            end
+        end
+    end
+
+    return nil, nil
+end
+
 ---@param ctx legate.TransportContext
 ---@param current_session legate.Session
 ---@param permission legate.PermissionRequest
----@return legate.PermissionOutcome?
+---@return legate.PermissionOutcome?, { server: string, method: string, arguments: table, context: table }?
 local function ministry_permission_outcome(ctx, current_session, permission)
     local matched_tool_call = ctx.session.tool_call_by_id(current_session, permission.toolCall.toolCallId)
     local server_name, tool_name = permission_mcp_target(matched_tool_call, permission)
 
-    if server_name == nil or tool_name == nil then
+    local ok, ministry = pcall(require, 'ministry')
+    if not ok or type(ministry.get_approval) ~= 'function' then
         return nil
     end
 
-    local ok, ministry = pcall(require, 'ministry')
-    if not ok or type(ministry.get_approval) ~= 'function' then
+    if server_name == nil or tool_name == nil then
+        server_name, tool_name = descriptor_permission_target(ministry, matched_tool_call, permission)
+    end
+
+    if server_name == nil or tool_name == nil then
         return nil
     end
 
@@ -199,9 +336,20 @@ local function ministry_permission_outcome(ctx, current_session, permission)
         return nil
     end
 
-    -- Ministry `ask` needs the ACP seam to pass so Ministry can prompt with the
-    -- full MCP payload at tools/call time.
-    return permission_outcome_from_ministry_decision(decision == 'reject' and 'reject' or 'allow', permission.options)
+    if decision == 'allow' or decision == 'reject' then
+        return permission_outcome_from_ministry_decision(decision, permission.options)
+    end
+
+    return nil,
+        {
+            server = server_name,
+            method = tool_name,
+            arguments = permission_mcp_arguments(matched_tool_call, permission),
+            context = {
+                legate_session_id = current_session.id,
+                tool_call_id = permission.toolCall.toolCallId,
+            },
+        }
 end
 
 ---@param ctx legate.TransportContext
@@ -395,6 +543,76 @@ local function resolve_pending_permission(pending_permissions, current_session, 
     return pending_permission, permission_outcome_from_selection(pending_permission.permission, option_selection)
 end
 
+---@param permission legate.PermissionRequest
+---@param outcome legate.PermissionOutcome
+---@return legate.PermissionOption?
+local function permission_option_from_outcome(permission, outcome)
+    if type(outcome.optionId) ~= 'string' then
+        return nil
+    end
+
+    return find_permission_option_by_id(outcome.optionId, permission.options)
+end
+
+---@param option legate.PermissionOption?
+---@return boolean
+local function permission_option_allows(option)
+    return option ~= nil and (option.kind == 'allow_once' or option.kind == 'allow_always')
+end
+
+---@param ministry_request { server: string, method: string, arguments: table, context: table }
+local function preapprove_ministry_request(ministry_request)
+    local ok, ministry = pcall(require, 'ministry')
+    if not ok or type(ministry.approve_once) ~= 'function' then
+        error('Ministry approval cannot be recorded for the selected ACP permission')
+    end
+
+    local approved_ok, approved, err = pcall(
+        ministry.approve_once,
+        ministry_request.server,
+        ministry_request.method,
+        ministry_request.arguments,
+        ministry_request.context
+    )
+
+    if not approved_ok then
+        error(string.format('Ministry approval recording failed: %s', tostring(approved)))
+    end
+
+    if approved ~= true then
+        local message = type(err) == 'table' and err.message or nil
+        error(message or 'Ministry approval was not recorded')
+    end
+end
+
+---@param ctx legate.TransportContext
+---@param generation integer
+---@param current_session legate.Session
+---@param permission legate.PermissionRequest
+---@param respond fun(result?: any, error?: table)
+---@param opts? { source?: string, ministry_request?: { server: string, method: string, arguments: table, context: table } }
+local function enqueue_pending_permission(ctx, generation, current_session, permission, respond, opts)
+    local request_id =
+        string.format('%s:%s:%d', current_session.id, permission.toolCall.toolCallId or 'approval', generation)
+    permission.request_id = request_id
+    permission.generation = generation
+
+    ctx.session.wait_for_approval(current_session, permission)
+
+    local pending_permissions = ctx.get_pending_permissions()
+    table.insert(pending_permissions, {
+        request_id = request_id,
+        generation = generation,
+        local_session_id = current_session.id,
+        permission = vim.deepcopy(permission),
+        source = opts and opts.source or nil,
+        ministry_request = opts and vim.deepcopy(opts.ministry_request) or nil,
+        respond = respond,
+    })
+    ctx.set_pending_permissions(pending_permissions)
+    ctx.reveal_inline_approval(current_session)
+end
+
 ---@param ctx legate.TransportContext
 ---@param generation integer
 ---@param permission legate.PermissionRequest
@@ -404,6 +622,25 @@ function M.handle_request(ctx, generation, permission, respond)
 
     if current_session == nil then
         respond(ctx.cancelled_response())
+        return
+    end
+
+    local ministry_outcome, ministry_request = ministry_permission_outcome(ctx, current_session, permission)
+
+    if ministry_outcome ~= nil then
+        ctx.session.record_approval(current_session, permission, ministry_outcome, 'ministry')
+        ctx.rerender(current_session)
+        respond({
+            outcome = ministry_outcome,
+        })
+        return
+    end
+
+    if ministry_request ~= nil then
+        enqueue_pending_permission(ctx, generation, current_session, permission, respond, {
+            source = 'ministry',
+            ministry_request = ministry_request,
+        })
         return
     end
 
@@ -418,17 +655,6 @@ function M.handle_request(ctx, generation, permission, respond)
         return
     end
 
-    local ministry_outcome = ministry_permission_outcome(ctx, current_session, permission)
-
-    if ministry_outcome ~= nil then
-        ctx.session.record_approval(current_session, permission, ministry_outcome, 'ministry')
-        ctx.rerender(current_session)
-        respond({
-            outcome = ministry_outcome,
-        })
-        return
-    end
-
     if ctx.config.get().permission_strategy == 'default' then
         local outcome = default_permission_outcome(ctx, current_session, permission)
         ctx.session.record_approval(current_session, permission, outcome, 'default')
@@ -439,23 +665,7 @@ function M.handle_request(ctx, generation, permission, respond)
         return
     end
 
-    local request_id =
-        string.format('%s:%s:%d', current_session.id, permission.toolCall.toolCallId or 'approval', generation)
-    permission.request_id = request_id
-    permission.generation = generation
-
-    ctx.session.wait_for_approval(current_session, permission)
-
-    local pending_permissions = ctx.get_pending_permissions()
-    table.insert(pending_permissions, {
-        request_id = request_id,
-        generation = generation,
-        local_session_id = current_session.id,
-        permission = vim.deepcopy(permission),
-        respond = respond,
-    })
-    ctx.set_pending_permissions(pending_permissions)
-    ctx.reveal_inline_approval(current_session)
+    enqueue_pending_permission(ctx, generation, current_session, permission, respond)
 end
 
 ---@param ctx legate.TransportContext
@@ -506,6 +716,13 @@ function M.select_pending_approval(ctx, current_session, selection)
         error(string.format('Unknown ACP approval option: %s', tostring(selection)))
     end
 
+    if pending_permission.ministry_request ~= nil then
+        local selected_option = permission_option_from_outcome(pending_permission.permission, outcome)
+        if permission_option_allows(selected_option) then
+            preapprove_ministry_request(pending_permission.ministry_request)
+        end
+    end
+
     local retained = {}
 
     for _, candidate in ipairs(pending_permissions) do
@@ -515,7 +732,12 @@ function M.select_pending_approval(ctx, current_session, selection)
     end
 
     ctx.set_pending_permissions(retained)
-    ctx.session.record_approval(live_session, pending_permission.permission, outcome, 'select')
+    ctx.session.record_approval(
+        live_session,
+        pending_permission.permission,
+        outcome,
+        pending_permission.source or 'select'
+    )
     ctx.rerender(live_session)
     pending_permission.respond({
         outcome = outcome,

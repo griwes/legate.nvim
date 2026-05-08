@@ -431,4 +431,6 @@
 ---@field generation integer
 ---@field local_session_id string
 ---@field permission legate.PermissionRequest
+---@field source? string
+---@field ministry_request? { server: string, method: string, arguments: table, context: table }
 ---@field respond fun(result?: any, error?: table)
