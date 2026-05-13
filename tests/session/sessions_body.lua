@@ -1,5 +1,69 @@
 local persistence = require('legate.core.persistence')
 
+---@param path string
+---@return table
+local function read_json(path)
+    return vim.json.decode(table.concat(vim.fn.readfile(path), '\n'))
+end
+
+---@param value string
+---@return string
+local function encode_path_component(value)
+    return value:gsub('[^%w._-]', function(char)
+        return string.format('%%%02X', char:byte())
+    end)
+end
+
+---@param path string
+---@param payload table
+local function write_json(path, payload)
+    vim.fn.mkdir(vim.fn.fnamemodify(path, ':h'), 'p')
+    vim.fn.writefile({ vim.json.encode(payload) }, path)
+end
+
+---@param id string
+---@return string
+local function session_filename(id)
+    return string.format('%s.json', encode_path_component(id))
+end
+
+---@param session table
+---@return table
+local function persisted_session_index_entry(session)
+    return {
+        id = session.id,
+        ordinal = session.ordinal,
+        adapter_name = session.adapter_name,
+        status = session.status,
+        remote_id = session.remote_id,
+        remote_sync_state = session.remote_sync_state,
+        cwd = session.cwd,
+        created_at = session.created_at,
+        updated_at = session.updated_at,
+        file = session_filename(session.id),
+    }
+end
+
+---@param path string
+---@param payload table
+local function write_persisted_sessions(path, payload)
+    local sessions = vim.islist(payload.sessions) and payload.sessions or {}
+    local root = string.format('%s.d', path)
+
+    for _, session in ipairs(sessions) do
+        write_json(vim.fs.joinpath(root, 'sessions', session_filename(session.id)), session)
+    end
+
+    write_json(path, {
+        version = 1,
+        current_id = payload.current_id,
+        next_ordinal = payload.next_ordinal,
+        next_message_id = payload.next_message_id,
+        next_pending_approval_ordinal = payload.next_pending_approval_ordinal,
+        sessions = vim.tbl_map(persisted_session_index_entry, sessions),
+    })
+end
+
 it('loads and exposes setup', function()
     assert.are.equal('function', type(plugin.setup))
     assert.are.equal('function', type(api.open_chat))
@@ -23,14 +87,6 @@ it('normalizes configuration with defaults', function()
     assert.are.same({ 'codex-acp' }, config.adapters.codex.command)
     assert.are.equal('default', config.permission_strategy)
     assert.are.equal('reject_once', config.permission_default)
-end)
-
-it('accepts terminal_manager as a legacy ACP terminal backend alias', function()
-    local config = plugin.setup({
-        terminal_backend = 'terminal_manager',
-    })
-
-    assert.are.equal('terminalia', config.terminal_backend)
 end)
 
 it('accepts select as an ACP permission strategy', function()
@@ -208,12 +264,7 @@ it('creates and reuses a single chat buffer', function()
     assert.are.same({
         local_id = 'acp:1',
     }, buffer.session_locator(first))
-    assert.are.equal(
-        'markdown',
-        vim.api.nvim_get_option_value('filetype', {
-            buf = first,
-        })
-    )
+    assert.are.equal('markdown', vim.bo[first].filetype)
 end)
 
 it('creates ordered session identifiers', function()
@@ -284,12 +335,7 @@ it('closes the current local ACP session and rerenders the next selected session
     assert.are.equal(second.id, assert(next_session).id)
     assert.are.equal(second.id, api.current_session().id)
     assert.are.equal('second draft', api.get_prompt())
-    assert.are.equal(
-        string.format('ACP  %s  adapter=codex  idle  sync=unbound', second.id),
-        vim.api.nvim_get_option_value('winbar', {
-            win = 0,
-        })
-    )
+    assert.are.equal(string.format('ACP  %s  adapter=codex  idle  sync=unbound', second.id), vim.wo[0].winbar)
     assert.is_true(vim.tbl_contains(lines, '## Prompt'))
 end)
 
@@ -328,12 +374,7 @@ it('recreates a fresh current session when closing the last session with auto-cr
     assert.are.equal('custom', next_session.adapter_name)
     assert.are.equal('acp:2', api.current_session().id)
     assert.are.equal('', api.get_prompt())
-    assert.are.equal(
-        'ACP  acp:2  adapter=custom  idle  sync=unbound',
-        vim.api.nvim_get_option_value('winbar', {
-            win = 0,
-        })
-    )
+    assert.are.equal('ACP  acp:2  adapter=custom  idle  sync=unbound', vim.wo[0].winbar)
     assert.is_true(vim.tbl_contains(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), '## Prompt'))
 end)
 
@@ -502,12 +543,7 @@ it('loads an unbound local ACP session explicitly and rerenders remote sync stat
     assert.are.equal('sess_123', current_session.remote_id)
     assert.are.equal('created', current_session.remote_sync_state)
     assert.are.equal('session/new', fake_client.sync_calls[3].method)
-    assert.are.equal(
-        'ACP  acp:1  adapter=codex  idle  sync=created  remote=sess_123',
-        vim.api.nvim_get_option_value('winbar', {
-            win = 0,
-        })
-    )
+    assert.are.equal('ACP  acp:1  adapter=codex  idle  sync=created  remote=sess_123', vim.wo[0].winbar)
     assert.is_false(vim.tbl_contains(lines, '> Remote Sync Error: `created`'))
 end)
 
@@ -545,12 +581,7 @@ it('loads an existing remote ACP session explicitly when the agent supports sess
     assert.are.equal(2, #current_session.available_commands)
     assert.are.equal('session/load', second_client.sync_calls[4].method)
     assert.are.equal('sess_123', second_client.sync_calls[4].params.sessionId)
-    assert.are.equal(
-        'ACP  acp:1  adapter=codex  idle  sync=loaded  remote=sess_123',
-        vim.api.nvim_get_option_value('winbar', {
-            win = 0,
-        })
-    )
+    assert.are.equal('ACP  acp:1  adapter=codex  idle  sync=loaded  remote=sess_123', vim.wo[0].winbar)
     assert.is_false(vim.tbl_contains(lines, '## Slash Commands'))
 end)
 
@@ -562,9 +593,12 @@ it('rejects explicitly loading an already-bound ACP session when session/load is
         stopReason = 'end_turn',
     })
 
-    assert.has_error(function()
-        api.load_session()
-    end, 'ACP agent does not advertise session/load support for session acp:1')
+    assert.has_error(
+        function()
+            api.load_session()
+        end,
+        'ACP session is in load_failed recovery state; retry `:LegateLoadSession` or create a fresh remote with `:LegateRebindSession`'
+    )
 
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
@@ -573,12 +607,7 @@ it('rejects explicitly loading an already-bound ACP session when session/load is
         'ACP agent does not advertise session/load support for session acp:1',
         current_session.remote_sync_error
     )
-    assert.are.equal(
-        'ACP  acp:1  adapter=codex  idle  sync=load_failed  remote=sess_123',
-        vim.api.nvim_get_option_value('winbar', {
-            win = 0,
-        })
-    )
+    assert.are.equal('ACP  acp:1  adapter=codex  idle  sync=load_failed  remote=sess_123', vim.wo[0].winbar)
     assert.is_true(
         vim.tbl_contains(
             lines,
@@ -594,9 +623,12 @@ it('blocks prompt submission after an explicit load failure until the user expli
     assert.are.equal('sess_123', current_session.remote_id)
     assert.are.equal('created', current_session.remote_sync_state)
 
-    assert.has_error(function()
-        api.load_session()
-    end, 'ACP agent does not advertise session/load support for session acp:1')
+    assert.has_error(
+        function()
+            api.load_session()
+        end,
+        'ACP session is in load_failed recovery state; retry `:LegateLoadSession` or create a fresh remote with `:LegateRebindSession`'
+    )
 
     api.set_prompt('after failed reload')
 
@@ -639,9 +671,12 @@ it('surfaces session/load runtime failure instead of silently rebinding to a fre
 
     fake_load_error = 'session/load failed'
 
-    assert.has_error(function()
-        api.load_session()
-    end, 'session/load failed')
+    assert.has_error(
+        function()
+            api.load_session()
+        end,
+        'ACP session is in load_failed recovery state; retry `:LegateLoadSession` or create a fresh remote with `:LegateRebindSession`'
+    )
 
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
@@ -652,12 +687,7 @@ it('surfaces session/load runtime failure instead of silently rebinding to a fre
     assert.are.equal('session/load', fake_client.sync_calls[4].method)
     assert.are.equal('session/load failed', current_session.remote_sync_error)
     assert.are.same(fake_available_commands, current_session.available_commands)
-    assert.are.equal(
-        'ACP  acp:1  adapter=codex  idle  sync=load_failed  remote=sess_123',
-        vim.api.nvim_get_option_value('winbar', {
-            win = 0,
-        })
-    )
+    assert.are.equal('ACP  acp:1  adapter=codex  idle  sync=load_failed  remote=sess_123', vim.wo[0].winbar)
     assert.is_true(vim.tbl_contains(lines, '> Remote Sync Error: `session/load failed`'))
     assert.is_true(
         vim.tbl_contains(
@@ -669,6 +699,49 @@ it('surfaces session/load runtime failure instead of silently rebinding to a fre
         vim.tbl_contains(
             api.session_lines(),
             '* acp:1  adapter=codex  [idle]  remote=sess_123  sync=load_failed  messages=1'
+        )
+    )
+end)
+
+it('renders load_failed recovery state when implicit prompt session/load fails', function()
+    local bufnr = api.open_chat()
+    fake_supports_load = true
+    api.set_prompt('first turn')
+    local current_session = api.submit_prompt()
+
+    fake_client:resolve({
+        stopReason = 'end_turn',
+    })
+
+    current_session.available_commands = vim.deepcopy(fake_available_commands)
+    fake_load_error = 'Resource not found'
+    api.set_prompt('second turn')
+
+    assert.has_error(
+        function()
+            api.submit_prompt()
+        end,
+        'ACP session is in load_failed recovery state; retry `:LegateLoadSession` or create a fresh remote with `:LegateRebindSession`'
+    )
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+    assert.are.equal('sess_123', current_session.remote_id)
+    assert.is_nil(current_session.transport_remote_id)
+    assert.are.equal('load_failed', current_session.remote_sync_state)
+    assert.are.equal('Resource not found', current_session.remote_sync_error)
+    assert.are.equal('second turn', current_session.draft_prompt)
+    assert.are.equal('idle', current_session.status)
+    assert.are.equal(1, #current_session.messages)
+    assert.are.equal(2, #fake_clients)
+    assert.is_true(fake_clients[1].closed)
+    assert.are.equal(0, #fake_clients[2].async_calls)
+    assert.are.equal('session/load', fake_clients[2].sync_calls[3].method)
+    assert.is_true(vim.tbl_contains(lines, '> Remote Sync Error: `Resource not found`'))
+    assert.is_true(
+        vim.tbl_contains(
+            lines,
+            '> Recovery: retry the recorded remote session with `:LegateLoadSession`, or create a fresh one with `:LegateRebindSession`'
         )
     )
 end)
@@ -751,9 +824,12 @@ it('rebinds a load_failed ACP session to a fresh remote session explicitly', fun
 
     fake_load_error = 'session/load failed'
 
-    assert.has_error(function()
-        api.load_session()
-    end, 'session/load failed')
+    assert.has_error(
+        function()
+            api.load_session()
+        end,
+        'ACP session is in load_failed recovery state; retry `:LegateLoadSession` or create a fresh remote with `:LegateRebindSession`'
+    )
 
     api.rebind_session()
 
@@ -766,12 +842,7 @@ it('rebinds a load_failed ACP session to a fresh remote session explicitly', fun
     assert.are.equal(1, #current_session.messages)
     assert.are.equal('first turn', current_session.messages[1].text)
     assert.are.equal('session/new', fake_client.sync_calls[3].method)
-    assert.are.equal(
-        'ACP  acp:1  adapter=codex  idle  sync=created  remote=sess_124',
-        vim.api.nvim_get_option_value('winbar', {
-            win = 0,
-        })
-    )
+    assert.are.equal('ACP  acp:1  adapter=codex  idle  sync=created  remote=sess_124', vim.wo[0].winbar)
     assert.is_false(vim.tbl_contains(lines, '> Remote Sync Error: `session/load failed`'))
 end)
 
@@ -797,9 +868,12 @@ it('rejects rebinding an ACP session while another session has a running turn', 
     })
     fake_load_error = 'session/load failed'
 
-    assert.has_error(function()
-        api.load_session(first.id)
-    end, 'session/load failed')
+    assert.has_error(
+        function()
+            api.load_session(first.id)
+        end,
+        'ACP session is in load_failed recovery state; retry `:LegateLoadSession` or create a fresh remote with `:LegateRebindSession`'
+    )
 
     local second = api.new_session()
     api.set_prompt('running turn')
@@ -865,6 +939,17 @@ it('saves and restores multiple local ACP sessions from disk', function()
 
     local ok = api.save_sessions()
     assert.is_true(ok)
+
+    local index = read_json(state_file)
+    local first_record = read_json(vim.fs.joinpath(string.format('%s.d', state_file), 'sessions', 'acp%3A1.json'))
+
+    assert.are.equal(1, index.version)
+    assert.are.equal(2, #index.sessions)
+    assert.are.equal('acp%3A1.json', index.sessions[1].file)
+    assert.is_nil(index.sessions[1].messages)
+    assert.are.equal('first reply', first_record.messages[1].text)
+    assert.are.equal('first draft', first_record.draft_prompt)
+
     api.clear()
 
     plugin.setup({
@@ -949,6 +1034,80 @@ it('restores persisted ACP sessions during setup when configured', function()
     assert.are.equal('restored on setup', api.current_session().draft_prompt)
 end)
 
+it('adopts mksession-restored ACP URI buffers during setup', function()
+    local state_file = temp_path('acp-restore-uri-buffer.json')
+
+    plugin.setup({
+        session_state_file = state_file,
+    })
+    local bufnr = api.open_chat()
+    api.set_prompt('restored URI draft')
+    local current_id = api.current_session().id
+    local buffer_name = vim.api.nvim_buf_get_name(bufnr)
+    local ok = api.save_sessions()
+    assert.is_true(ok)
+    api.clear()
+
+    vim.cmd.enew()
+    local restored_bufnr = vim.api.nvim_get_current_buf()
+    vim.api.nvim_buf_set_name(restored_bufnr, buffer_name)
+    assert.are.equal('', vim.bo[restored_bufnr].buftype)
+    assert.is_true(vim.bo[restored_bufnr].swapfile)
+
+    plugin.setup({
+        session_state_file = state_file,
+        restore_sessions_on_setup = true,
+    })
+
+    local buffer = require('legate.ui.buffer')
+    assert.are.equal(restored_bufnr, buffer.get())
+    assert.are.equal(buffer_name, vim.api.nvim_buf_get_name(restored_bufnr))
+    assert.are.equal('nofile', vim.bo[restored_bufnr].buftype)
+    assert.is_false(vim.bo[restored_bufnr].swapfile)
+    assert.is_false(vim.bo[restored_bufnr].buflisted)
+    assert.is_false(vim.bo[restored_bufnr].modified)
+    assert.are.equal(current_id, api.current_session().id)
+
+    local lines = vim.api.nvim_buf_get_lines(restored_bufnr, 0, -1, false)
+    assert.is_true(table.concat(lines, '\n'):find('restored URI draft', 1, true) ~= nil)
+end)
+
+it('reveals hidden mksession-restored ACP URI buffers over empty placeholders during setup', function()
+    local state_file = temp_path('acp-restore-hidden-uri-buffer.json')
+
+    plugin.setup({
+        session_state_file = state_file,
+    })
+    local bufnr = api.open_chat()
+    api.set_prompt('restored hidden URI draft')
+    local buffer_name = vim.api.nvim_buf_get_name(bufnr)
+    local ok = api.save_sessions()
+    assert.is_true(ok)
+    api.clear()
+
+    local restored_bufnr = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(restored_bufnr, buffer_name)
+    vim.cmd.enew()
+    local placeholder = vim.api.nvim_get_current_buf()
+    assert.are_not.equal(restored_bufnr, placeholder)
+
+    plugin.setup({
+        session_state_file = state_file,
+        restore_sessions_on_setup = true,
+    })
+
+    local current = vim.api.nvim_get_current_buf()
+    assert.are.equal(restored_bufnr, current)
+    assert.is_false(vim.api.nvim_buf_is_valid(placeholder))
+    assert.are.equal(buffer_name, vim.api.nvim_buf_get_name(restored_bufnr))
+    assert.are.equal('nofile', vim.bo[restored_bufnr].buftype)
+    assert.is_false(vim.bo[restored_bufnr].buflisted)
+    assert.is_false(vim.bo[restored_bufnr].modified)
+
+    local lines = vim.api.nvim_buf_get_lines(restored_bufnr, 0, -1, false)
+    assert.is_true(table.concat(lines, '\n'):find('restored hidden URI draft', 1, true) ~= nil)
+end)
+
 it('restores sessions with open_chat=true and auto_create_session when no state exists', function()
     local state_file = temp_path('acp-restore-open-chat-no-state.json')
 
@@ -1027,31 +1186,29 @@ end)
 it('continues the newest persisted ACP session when memory has no sessions', function()
     local state_file = temp_path('acp-continue-last.json')
 
-    vim.fn.writefile({
-        vim.json.encode({
-            current_id = 'acp:1',
-            next_ordinal = 3,
-            next_message_id = 1,
-            sessions = {
-                {
-                    id = 'acp:1',
-                    ordinal = 1,
-                    status = 'idle',
-                    messages = {},
-                    draft_prompt = 'current but older',
-                    updated_at = 20,
-                },
-                {
-                    id = 'acp:2',
-                    ordinal = 2,
-                    status = 'idle',
-                    messages = {},
-                    draft_prompt = 'latest persisted',
-                    updated_at = 40,
-                },
+    write_persisted_sessions(state_file, {
+        current_id = 'acp:1',
+        next_ordinal = 3,
+        next_message_id = 1,
+        sessions = {
+            {
+                id = 'acp:1',
+                ordinal = 1,
+                status = 'idle',
+                messages = {},
+                draft_prompt = 'current but older',
+                updated_at = 20,
             },
-        }),
-    }, state_file)
+            {
+                id = 'acp:2',
+                ordinal = 2,
+                status = 'idle',
+                messages = {},
+                draft_prompt = 'latest persisted',
+                updated_at = 40,
+            },
+        },
+    })
 
     plugin.setup({
         session_state_file = state_file,
@@ -1158,31 +1315,29 @@ end)
 it('does not implicitly load restored remote sessions when submitting the next prompt', function()
     local state_file = temp_path('acp-no-implicit-load.json')
 
-    vim.fn.writefile({
-        vim.json.encode({
-            current_id = 'acp:1',
-            next_ordinal = 2,
-            next_message_id = 2,
-            sessions = {
-                {
-                    id = 'acp:1',
-                    ordinal = 1,
-                    status = 'idle',
-                    messages = {
-                        {
-                            id = 1,
-                            role = 'assistant',
-                            text = 'restored assistant message',
-                        },
+    write_persisted_sessions(state_file, {
+        current_id = 'acp:1',
+        next_ordinal = 2,
+        next_message_id = 2,
+        sessions = {
+            {
+                id = 'acp:1',
+                ordinal = 1,
+                status = 'idle',
+                messages = {
+                    {
+                        id = 1,
+                        role = 'assistant',
+                        text = 'restored assistant message',
                     },
-                    turn_id = 1,
-                    draft_prompt = '',
-                    remote_id = 'sess_restored',
-                    remote_sync_state = 'created',
                 },
+                turn_id = 1,
+                draft_prompt = '',
+                remote_id = 'sess_restored',
+                remote_sync_state = 'created',
             },
-        }),
-    }, state_file)
+        },
+    })
 
     plugin.setup({
         session_state_file = state_file,
@@ -1199,31 +1354,29 @@ end)
 it('explicitly reloads a restored remote session through LegateLoadSession', function()
     local state_file = temp_path('acp-explicit-load-restored.json')
 
-    vim.fn.writefile({
-        vim.json.encode({
-            current_id = 'acp:1',
-            next_ordinal = 2,
-            next_message_id = 2,
-            sessions = {
-                {
-                    id = 'acp:1',
-                    ordinal = 1,
-                    status = 'idle',
-                    messages = {
-                        {
-                            id = 1,
-                            role = 'assistant',
-                            text = 'restored assistant message',
-                        },
+    write_persisted_sessions(state_file, {
+        current_id = 'acp:1',
+        next_ordinal = 2,
+        next_message_id = 2,
+        sessions = {
+            {
+                id = 'acp:1',
+                ordinal = 1,
+                status = 'idle',
+                messages = {
+                    {
+                        id = 1,
+                        role = 'assistant',
+                        text = 'restored assistant message',
                     },
-                    turn_id = 1,
-                    draft_prompt = '',
-                    remote_id = 'sess_123',
-                    remote_sync_state = 'created',
                 },
+                turn_id = 1,
+                draft_prompt = '',
+                remote_id = 'sess_123',
+                remote_sync_state = 'created',
             },
-        }),
-    }, state_file)
+        },
+    })
 
     plugin.setup({
         session_state_file = state_file,
@@ -1244,40 +1397,88 @@ it('explicitly reloads a restored remote session through LegateLoadSession', fun
     assert.is_false(vim.tbl_contains(sync_methods, 'session/new'))
 end)
 
+it('submits on an explicitly loaded restored remote session without reloading it again', function()
+    local state_file = temp_path('acp-submit-after-explicit-load.json')
+
+    write_persisted_sessions(state_file, {
+        current_id = 'acp:1',
+        next_ordinal = 2,
+        next_message_id = 2,
+        sessions = {
+            {
+                id = 'acp:1',
+                ordinal = 1,
+                status = 'idle',
+                messages = {
+                    {
+                        id = 1,
+                        role = 'assistant',
+                        text = 'restored assistant message',
+                    },
+                },
+                turn_id = 1,
+                draft_prompt = '',
+                remote_id = 'sess_123',
+                remote_sync_state = 'created',
+            },
+        },
+    })
+
+    plugin.setup({
+        session_state_file = state_file,
+    })
+    fake_supports_load = true
+    api.restore_sessions()
+
+    api.load_session()
+
+    local loaded_client = fake_client
+    local sync_call_count = #loaded_client.sync_calls
+
+    api.set_prompt('next turn')
+    api.submit_prompt()
+
+    assert.are.equal(1, #fake_clients)
+    assert.are.equal(sync_call_count, #loaded_client.sync_calls)
+    assert.are.equal(1, #loaded_client.async_calls)
+    assert.are.equal('session/prompt', loaded_client.async_calls[1].method)
+    assert.are.equal('sess_123', loaded_client.async_calls[1].params.sessionId)
+    assert.are.equal(1, #loaded_client.async_calls[1].params.prompt)
+    assert.is_true(loaded_client.async_calls[1].params.prompt[1].text:match('next turn%s*$') ~= nil)
+end)
+
 it('restores slash commands whose optional input decodes as json null', function()
     local state_file = temp_path('acp-restore-null-input.json')
 
-    vim.fn.writefile({
-        vim.json.encode({
-            current_id = 'acp:1',
-            next_ordinal = 2,
-            next_message_id = 3,
-            sessions = {
-                {
-                    id = 'acp:1',
-                    ordinal = 1,
-                    status = 'idle',
-                    messages = {
-                        {
-                            id = 1,
-                            role = 'assistant',
-                            text = 'restored slash command',
-                        },
+    write_persisted_sessions(state_file, {
+        current_id = 'acp:1',
+        next_ordinal = 2,
+        next_message_id = 3,
+        sessions = {
+            {
+                id = 'acp:1',
+                ordinal = 1,
+                status = 'idle',
+                messages = {
+                    {
+                        id = 1,
+                        role = 'assistant',
+                        text = 'restored slash command',
                     },
-                    draft_prompt = '',
-                    remote_id = 'sess_123',
-                    remote_sync_state = 'created',
-                    available_commands = {
-                        {
-                            name = 'resume',
-                            description = 'Resume work',
-                            input = vim.NIL,
-                        },
+                },
+                draft_prompt = '',
+                remote_id = 'sess_123',
+                remote_sync_state = 'created',
+                available_commands = {
+                    {
+                        name = 'resume',
+                        description = 'Resume work',
+                        input = vim.NIL,
                     },
                 },
             },
-        }),
-    }, state_file)
+        },
+    })
 
     plugin.setup({
         session_state_file = state_file,
@@ -1299,31 +1500,29 @@ end)
 it('restores persisted load_failed remote sync state and error metadata', function()
     local state_file = temp_path('acp-restore-load-failed.json')
 
-    vim.fn.writefile({
-        vim.json.encode({
-            current_id = 'acp:1',
-            next_ordinal = 2,
-            next_message_id = 2,
-            sessions = {
-                {
-                    id = 'acp:1',
-                    ordinal = 1,
-                    status = 'idle',
-                    messages = {
-                        {
-                            id = 1,
-                            role = 'assistant',
-                            text = 'restore failed previously',
-                        },
+    write_persisted_sessions(state_file, {
+        current_id = 'acp:1',
+        next_ordinal = 2,
+        next_message_id = 2,
+        sessions = {
+            {
+                id = 'acp:1',
+                ordinal = 1,
+                status = 'idle',
+                messages = {
+                    {
+                        id = 1,
+                        role = 'assistant',
+                        text = 'restore failed previously',
                     },
-                    draft_prompt = '',
-                    remote_id = 'sess_123',
-                    remote_sync_state = 'load_failed',
-                    remote_sync_error = 'session/load failed',
                 },
+                draft_prompt = '',
+                remote_id = 'sess_123',
+                remote_sync_state = 'load_failed',
+                remote_sync_error = 'session/load failed',
             },
-        }),
-    }, state_file)
+        },
+    })
 
     plugin.setup({
         session_state_file = state_file,
@@ -1339,12 +1538,7 @@ it('restores persisted load_failed remote sync state and error metadata', functi
 
     assert.are.equal('load_failed', current_session.remote_sync_state)
     assert.are.equal('session/load failed', current_session.remote_sync_error)
-    assert.are.equal(
-        'ACP  acp:1  adapter=codex  idle  sync=load_failed  remote=sess_123',
-        vim.api.nvim_get_option_value('winbar', {
-            win = 0,
-        })
-    )
+    assert.are.equal('ACP  acp:1  adapter=codex  idle  sync=load_failed  remote=sess_123', vim.wo[0].winbar)
     assert.is_true(vim.tbl_contains(lines, '> Remote Sync Error: `session/load failed`'))
     assert.is_true(
         vim.tbl_contains(
@@ -1357,16 +1551,15 @@ end)
 it('ignores corrupted persisted session payloads whose sessions field is not a list', function()
     local state_file = temp_path('acp-restore-corrupted-sessions.json')
 
-    vim.fn.writefile({
-        vim.json.encode({
-            current_id = 'acp:1',
-            next_ordinal = 2,
-            next_message_id = 3,
-            sessions = {
-                broken = true,
-            },
-        }),
-    }, state_file)
+    write_json(state_file, {
+        version = 1,
+        current_id = 'acp:1',
+        next_ordinal = 2,
+        next_message_id = 3,
+        sessions = {
+            broken = true,
+        },
+    })
 
     plugin.setup({
         session_state_file = state_file,

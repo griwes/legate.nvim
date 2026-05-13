@@ -204,10 +204,6 @@ local function normalize(opts)
         error(string.format('Unknown ACP default adapter: %s', normalized.default_adapter))
     end
 
-    if normalized.terminal_backend == 'terminal_manager' then
-        normalized.terminal_backend = 'terminalia'
-    end
-
     if normalized.terminal_backend ~= 'native' and normalized.terminal_backend ~= 'terminalia' then
         error(string.format('Unsupported ACP terminal backend in the bootstrap slice: %s', normalized.terminal_backend))
     end

@@ -104,11 +104,17 @@ local function is_chat_buffer(bufnr)
         return false
     end
 
-    return vim.api.nvim_get_option_value('buftype', {
-        buf = bufnr,
-    }) == 'nofile' and not vim.api.nvim_get_option_value('swapfile', {
-        buf = bufnr,
-    })
+    return vim.bo[bufnr].buftype == 'nofile' and not vim.bo[bufnr].swapfile
+end
+
+---@param bufnr integer
+---@return boolean
+local function is_session_uri_buffer(bufnr)
+    if not vim.api.nvim_buf_is_valid(bufnr) then
+        return false
+    end
+
+    return session_locator_from_name(vim.api.nvim_buf_get_name(bufnr)) ~= nil
 end
 
 ---@param keep_bufnr? integer
@@ -126,37 +132,16 @@ local function purge_stale_buffers(keep_bufnr)
     end
 end
 
----@return integer?
-local function find_existing()
-    for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
-        if is_chat_buffer(bufnr) then
-            return bufnr
-        end
-    end
-
-    return nil
-end
-
 ---@param bufnr integer
 local function configure(bufnr)
-    vim.api.nvim_set_option_value('buftype', 'nofile', {
-        buf = bufnr,
-    })
-    vim.api.nvim_set_option_value('bufhidden', 'hide', {
-        buf = bufnr,
-    })
-    vim.api.nvim_set_option_value('swapfile', false, {
-        buf = bufnr,
-    })
-    vim.api.nvim_set_option_value('filetype', config.get().filetype, {
-        buf = bufnr,
-    })
-    vim.api.nvim_set_option_value('omnifunc', "v:lua.require'legate.ui.completion'.complete", {
-        buf = bufnr,
-    })
-    vim.api.nvim_set_option_value('modifiable', false, {
-        buf = bufnr,
-    })
+    vim.bo[bufnr].buftype = 'nofile'
+    vim.bo[bufnr].bufhidden = 'hide'
+    vim.bo[bufnr].swapfile = false
+    vim.bo[bufnr].buflisted = false
+    vim.bo[bufnr].filetype = config.get().filetype
+    vim.bo[bufnr].omnifunc = "v:lua.require'legate.ui.completion'.complete"
+    vim.bo[bufnr].modifiable = false
+    vim.bo[bufnr].modified = false
 end
 
 ---@param bufnr integer
@@ -179,6 +164,52 @@ local function attach_hover_lsp(bufnr)
     if ok and type(hover_lsp.attach) == 'function' then
         hover_lsp.attach(bufnr)
     end
+end
+
+---@param bufnr integer
+---@return boolean
+local function visible_in_any_window(bufnr)
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+        if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == bufnr then
+            return true
+        end
+    end
+
+    return false
+end
+
+---@param bufnr integer
+---@return boolean
+local function is_empty_placeholder(bufnr)
+    if not vim.api.nvim_buf_is_valid(bufnr) then
+        return false
+    end
+
+    return vim.api.nvim_buf_get_name(bufnr) == ''
+        and vim.bo[bufnr].buftype == ''
+        and not vim.bo[bufnr].modified
+        and vim.api.nvim_buf_line_count(bufnr) == 1
+        and vim.api.nvim_buf_get_lines(bufnr, 0, 1, false)[1] == ''
+end
+
+---@return integer?
+local function find_existing()
+    for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+        if is_chat_buffer(bufnr) then
+            return bufnr
+        end
+    end
+
+    for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+        if is_session_uri_buffer(bufnr) then
+            configure(bufnr)
+            attach_prompt_guard(bufnr)
+            attach_hover_lsp(bufnr)
+            return bufnr
+        end
+    end
+
+    return nil
 end
 
 ---@param bufnr integer
@@ -217,8 +248,8 @@ function M.get()
         return state.bufnr
     end
 
-    purge_stale_buffers(nil)
     state.bufnr = find_existing()
+    purge_stale_buffers(state.bufnr)
     return state.bufnr
 end
 
@@ -252,6 +283,30 @@ function M.open()
     vim.api.nvim_win_set_buf(0, bufnr)
 
     return bufnr
+end
+
+---@param bufnr? integer
+---@return boolean
+function M.reveal_in_placeholder(bufnr)
+    if bufnr == nil or not vim.api.nvim_buf_is_valid(bufnr) then
+        return false
+    end
+
+    if visible_in_any_window(bufnr) then
+        return true
+    end
+
+    local current = vim.api.nvim_get_current_buf()
+
+    if not is_empty_placeholder(current) then
+        return false
+    end
+
+    vim.api.nvim_win_set_buf(0, bufnr)
+    pcall(vim.api.nvim_buf_delete, current, {
+        force = true,
+    })
+    return true
 end
 
 ---Forget buffer state and close the ACP chat buffer if it exists.
@@ -292,6 +347,7 @@ function M.with_mutation(bufnr, callback)
     local ok, err = pcall(callback)
 
     vim.bo[bufnr].modifiable = was_modifiable
+    M.mark_clean(bufnr)
     state.mutating[bufnr] = state.mutating[bufnr] - 1
 
     if state.mutating[bufnr] <= 0 then
@@ -301,6 +357,19 @@ function M.with_mutation(bufnr, callback)
     if not ok then
         error(err, 0)
     end
+end
+
+---@param bufnr integer
+function M.mark_clean(bufnr)
+    if not vim.api.nvim_buf_is_valid(bufnr) then
+        return
+    end
+
+    if not is_acp_buffer_name(vim.api.nvim_buf_get_name(bufnr)) then
+        return
+    end
+
+    vim.bo[bufnr].modified = false
 end
 
 ---@param bufnr integer

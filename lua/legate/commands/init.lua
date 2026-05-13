@@ -8,6 +8,15 @@ local function api()
     return require('legate.api')
 end
 
+---@param action fun()
+local function run_user_action(action)
+    local ok, err = pcall(action)
+
+    if not ok then
+        vim.notify(tostring(err), vim.log.levels.ERROR)
+    end
+end
+
 ---@return string[]
 local function session_ids()
     local ids = {}
@@ -266,7 +275,9 @@ function M.ensure()
 
     create('LegateLoadSession', function(opts)
         local args = vim.trim(opts.args)
-        api().load_session(args ~= '' and args or nil)
+        run_user_action(function()
+            api().load_session(args ~= '' and args or nil)
+        end)
     end, {
         desc = 'Bind or reload a Legate session',
         nargs = '?',
@@ -277,7 +288,9 @@ function M.ensure()
 
     create('LegateRebindSession', function(opts)
         local args = vim.trim(opts.args)
-        api().rebind_session(args ~= '' and args or nil)
+        run_user_action(function()
+            api().rebind_session(args ~= '' and args or nil)
+        end)
     end, {
         desc = 'Recover a load_failed Legate session with a fresh remote binding',
         nargs = '?',
@@ -287,7 +300,9 @@ function M.ensure()
     })
 
     create('LegateSubmit', function()
-        api().submit_prompt()
+        run_user_action(function()
+            api().submit_prompt_async()
+        end)
     end, {
         desc = 'Submit the Legate prompt from the chat buffer',
     })

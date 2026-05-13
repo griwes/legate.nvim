@@ -1,5 +1,8 @@
 local M = {}
 
+local LOAD_FAILED_RECOVERY_MESSAGE =
+    'ACP session is in load_failed recovery state; retry `:LegateLoadSession` or create a fresh remote with `:LegateRebindSession`'
+
 ---@param deps { buffer: legate.BufferModule, config: legate.ConfigModule, continuity: legate.SessionModule, persistence: legate.PersistenceModule, prompt_helper: table, render: legate.RenderModule, transport: legate.TransportModule, pickers: table, formatters: table, active_session: fun(): legate.Session, resolve_session: fun(session_id?: string): legate.Session, assert_session_binding_change_allowed: fun(current_session: legate.Session, action: string), store_draft: fun(current_session?: legate.Session), open_chat: fun(): integer }
 ---@return table
 function M.new(deps)
@@ -143,6 +146,7 @@ function M.new(deps)
                 deps.open_chat()
             elseif has_buffer then
                 deps.render.render(current_session, current_session.draft_prompt)
+                deps.buffer.reveal_in_placeholder(deps.buffer.get())
             end
 
             return restored
@@ -272,6 +276,10 @@ function M.new(deps)
         rerender_selected_session(current_session, prompt)
 
         if not ok then
+            if current_session.remote_sync_state == 'load_failed' then
+                error(LOAD_FAILED_RECOVERY_MESSAGE, 0)
+            end
+
             error(err, 0)
         end
 

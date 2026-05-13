@@ -21,9 +21,9 @@ local terminals = {}
 ---@field output_byte_limit integer?
 
 ---@type table<string, legate.TerminaliaTerminalState>
-local terminal_manager_terminals = {}
+local terminalia_terminals = {}
 local next_terminal_ordinal = 1
-local terminal_manager_module_name = 'terminalia'
+local terminalia_module_name = 'terminalia'
 
 ---@param message string
 ---@return table
@@ -129,13 +129,9 @@ local function update_preview(state)
             plain = true,
         })
 
-        vim.api.nvim_set_option_value('modifiable', true, {
-            buf = bufnr,
-        })
+        vim.bo[bufnr].modifiable = true
         vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
-        vim.api.nvim_set_option_value('modifiable', false, {
-            buf = bufnr,
-        })
+        vim.bo[bufnr].modifiable = false
     end)
 end
 
@@ -183,8 +179,8 @@ end
 
 ---@param handle legate.TerminalHandle
 ---@return legate.TerminaliaTerminalState?, table?
-local function terminal_manager_state(handle)
-    local state = terminal_manager_terminals[handle.id]
+local function terminalia_state(handle)
+    local state = terminalia_terminals[handle.id]
 
     if state == nil then
         return nil, request_error(string.format('Unknown ACP terminal id: %s', handle.id))
@@ -199,14 +195,14 @@ local function terminal_manager_state(handle)
 end
 
 ---@return table
-local function terminal_manager_api()
-    local ok, terminal_manager = pcall(require, terminal_manager_module_name)
+local function terminalia_api()
+    local ok, terminalia = pcall(require, terminalia_module_name)
 
     if not ok then
         error('ACP terminalia backend requires terminalia.nvim to be installed')
     end
 
-    return terminal_manager.api
+    return terminalia.api
 end
 
 ---@param state legate.NativeTerminalState
@@ -377,18 +373,10 @@ local native_backend = {
             local bufnr = vim.api.nvim_create_buf(false, true)
 
             vim.api.nvim_buf_set_name(bufnr, string.format('LegateTerminal:%s', handle.id))
-            vim.api.nvim_set_option_value('buftype', 'nofile', {
-                buf = bufnr,
-            })
-            vim.api.nvim_set_option_value('bufhidden', 'hide', {
-                buf = bufnr,
-            })
-            vim.api.nvim_set_option_value('swapfile', false, {
-                buf = bufnr,
-            })
-            vim.api.nvim_set_option_value('modifiable', false, {
-                buf = bufnr,
-            })
+            vim.bo[bufnr].buftype = 'nofile'
+            vim.bo[bufnr].bufhidden = 'hide'
+            vim.bo[bufnr].swapfile = false
+            vim.bo[bufnr].modifiable = false
 
             state.preview_bufnr = bufnr
         end
@@ -402,7 +390,7 @@ local native_backend = {
 }
 
 ---@type legate.TerminalBackend
-local terminal_manager_backend = {
+local terminalia_backend = {
     name = 'terminalia',
     create = function(opts)
         local cwd, cwd_error = validate_absolute_path(opts.cwd)
@@ -411,7 +399,7 @@ local terminal_manager_backend = {
             return nil, cwd_error
         end
 
-        local terminal_api = terminal_manager_api()
+        local terminal_api = terminalia_api()
         local argv = { opts.command }
         vim.list_extend(argv, opts.args or {})
 
@@ -427,33 +415,33 @@ local terminal_manager_backend = {
         local state = {
             handle = {
                 id = terminal.id,
-                backend = 'terminal_manager',
+                backend = 'terminalia',
                 session_id = opts.sessionId,
             },
             output_byte_limit = opts.outputByteLimit,
         }
 
-        terminal_manager_terminals[state.handle.id] = state
+        terminalia_terminals[state.handle.id] = state
 
         return state.handle, nil
     end,
     send = function(handle, data)
-        local state, state_error = terminal_manager_state(handle)
+        local state, state_error = terminalia_state(handle)
 
         if state == nil then
             error(state_error.message)
         end
 
-        terminal_manager_api().send(state.handle.id, data)
+        terminalia_api().send(state.handle.id, data)
     end,
     output = function(handle)
-        local state, state_error = terminal_manager_state(handle)
+        local state, state_error = terminalia_state(handle)
 
         if state == nil then
             return nil, state_error
         end
 
-        local output = terminal_manager_api().output(state.handle.id)
+        local output = terminalia_api().output(state.handle.id)
         local exit_status = nil
         local trimmed_output, truncated = trim_output(output.output, state.output_byte_limit)
 
@@ -472,13 +460,13 @@ local terminal_manager_backend = {
             nil
     end,
     wait = function(handle, timeout_ms)
-        local state, state_error = terminal_manager_state(handle)
+        local state, state_error = terminalia_state(handle)
 
         if state == nil then
             return nil, state_error
         end
 
-        local terminal = terminal_manager_api().wait(state.handle.id, timeout_ms)
+        local terminal = terminalia_api().wait(state.handle.id, timeout_ms)
 
         if terminal == nil or terminal.status ~= 'exited' then
             return nil, request_error(string.format('ACP terminal wait timed out: %s', handle.id))
@@ -490,35 +478,35 @@ local terminal_manager_backend = {
         }, nil
     end,
     kill = function(handle)
-        local state, state_error = terminal_manager_state(handle)
+        local state, state_error = terminalia_state(handle)
 
         if state == nil then
             return nil, state_error
         end
 
-        terminal_manager_api().kill(state.handle.id)
+        terminalia_api().kill(state.handle.id)
 
         return {}, nil
     end,
     release = function(handle)
-        local state, state_error = terminal_manager_state(handle)
+        local state, state_error = terminalia_state(handle)
 
         if state == nil then
             return nil, state_error
         end
 
-        terminal_manager_terminals[handle.id] = nil
+        terminalia_terminals[handle.id] = nil
 
         return {}, nil
     end,
     reveal = function(handle)
-        local state, state_error = terminal_manager_state(handle)
+        local state, state_error = terminalia_state(handle)
 
         if state == nil then
             return state_error
         end
 
-        terminal_manager_api().open(state.handle.id)
+        terminalia_api().open(state.handle.id)
 
         return nil
     end,
@@ -531,8 +519,8 @@ function M.resolve()
         return native_backend
     end
 
-    if config.get().terminal_backend == 'terminalia' or config.get().terminal_backend == 'terminal_manager' then
-        return terminal_manager_backend
+    if config.get().terminal_backend == 'terminalia' then
+        return terminalia_backend
     end
 
     error(string.format('Unsupported ACP terminal backend: %s', config.get().terminal_backend))
@@ -587,15 +575,15 @@ function M.clear()
         terminals[id] = nil
     end
 
-    local ok, terminal_api = pcall(terminal_manager_api)
+    local ok, terminal_api = pcall(terminalia_api)
 
     if ok then
-        for id, handle in pairs(terminal_manager_terminals) do
+        for id, handle in pairs(terminalia_terminals) do
             pcall(terminal_api.release, handle.handle.id)
-            terminal_manager_terminals[id] = nil
+            terminalia_terminals[id] = nil
         end
     else
-        terminal_manager_terminals = {}
+        terminalia_terminals = {}
     end
 
     next_terminal_ordinal = 1

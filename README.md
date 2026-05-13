@@ -107,7 +107,7 @@ Example local `lazy.nvim` spec:
 - a repo-owned opt-in live restore smoke now proves that a persisted local Legate session can be restored in a fresh Neovim process, explicitly rebound through `session/load`, and also that a follow-up without explicit load does not auto-resume the old remote
 - a second repo-owned opt-in live smoke now proves `load_failed` recovery against real `codex-acp`: retrying the recorded remote id fails closed as expected, `LegateRebindSession` creates a fresh remote session, and a follow-up prompt succeeds on that rebound session
 - a repo-owned opt-in live terminal-selection probe now requires an observed terminal or ACP tool-call path and records whether `codex-acp` actually used ACP `terminal/*` plus which ACP tool-call kinds were observed instead
-- current local probe runs with both `terminal_backend = 'native'` and `terminal_backend = 'terminal_manager'` still chose an `execute` tool call and made zero ACP `terminal/*` requests
+- current local probe runs with both `terminal_backend = 'native'` and `terminal_backend = 'terminalia'` still chose an `execute` tool call and made zero ACP `terminal/*` requests
 - terminal support is defined as a contract now, and the current slice ships both the default native hidden-process backend and a `terminalia.nvim` adapter backend
 - Legate contributes a producer-owned Statuesque widget at `statuesque.widgets.legate`; use `{ name = 'legate', optional = true }` in a Statuesque surface to show active session, adapter, turn state, approval count, and remote-sync state without extra user-side wiring
 
@@ -128,8 +128,6 @@ require('legate').setup({
     terminal_backend = 'terminalia',
 })
 ```
-
-`terminal_backend = 'terminalia'` is the preferred spelling. The legacy `'terminal_manager'` value is still accepted for compatibility.
 
 ## Adapters
 
@@ -274,7 +272,11 @@ require('legate').setup({
 })
 ```
 
-By default, ACP stores session state at `stdpath('state') .. '/legate.nvim/sessions.json'`. Override `session_state_file` if you want a different location.
+By default, ACP stores a compact session index at
+`stdpath('state') .. '/legate.nvim/sessions.json'` and writes each local ACP
+session to a separate JSON file under `sessions.json.d/sessions/`. Override
+`session_state_file` if you want a different index location; the fragmented
+record directory is derived from that path.
 
 Restored state is intentionally local only: transcript, draft, tool rows, approvals, config options, slash commands, and remote binding metadata come back, but ACP still treats renewed remote continuity as an explicit load/bind step instead of assuming the old remote session is still valid.
 
@@ -294,7 +296,7 @@ Restored state is intentionally local only: transcript, draft, tool rows, approv
 The live restore and load-failed recovery smokes use real `codex-acp` with `auth_method = 'chatgpt'`, so they expect working local Codex auth before you run them.
 The live terminal-selection probe also uses real `codex-acp` with `auth_method = 'chatgpt'`; it enables `ministry.nvim` injection and guidance during the run, fails if no terminal or ACP tool-call path is observed, reports whether the agent actually used ACP `terminal/*`, whether it used `neovim/terminal/*`, which ACP tool-call kinds were observed instead, and whether any observed tool calls were `execute`, and accepts:
 
-- `LEGATE_LIVE_TERMINAL_BACKEND=native|terminalia` (legacy `ACP_LIVE_TERMINAL_BACKEND` also works)
+- `LEGATE_LIVE_TERMINAL_BACKEND=native|terminalia`
 - `LEGATE_LIVE_PROBE_MODE=balanced|strict_acp_first|strict_mcp_terminal|hard_mcp_terminal_only|split_mcp_routing` (legacy `ACP_LIVE_PROBE_MODE` also works)
 
 for backend and guidance-strength comparison. The latest real `native` probes against installed `zed-industries/codex-acp` do reach the injected MCP server now: they issue `tools/list`, call `neovim/terminal/create|wait|output|release`, and complete the probe without any generic execute fallback. The remaining split-routing mismatch is narrower now: current `codex-acp` MCP calls still arrive as `server = "neovim"` plus `tool = "neovim/terminal/create"` instead of the canonical `tool = "terminal/create"` shape, but Legate now tolerates that duplicate-prefixed form in the default terminal approval path and records the routing mismatch as probe evidence instead of blocking execution.

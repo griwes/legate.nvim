@@ -24,7 +24,6 @@
 
 ---@alias legate.TerminalBackendName
 ---| 'native'
----| 'terminal_manager'
 ---| 'terminalia'
 
 ---@alias legate.PermissionOptionKind

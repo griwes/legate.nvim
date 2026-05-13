@@ -4,6 +4,9 @@ local render = require('legate.ui.render')
 
 local M = {}
 
+local LOAD_FAILED_RECOVERY_MESSAGE =
+    'ACP session is in load_failed recovery state; retry `:LegateLoadSession` or create a fresh remote with `:LegateRebindSession`'
+
 ---@param deps { continuity: legate.SessionModule, transport: legate.TransportModule, active_session: fun(): legate.Session, store_draft: fun(current_session?: legate.Session), select_session: fun(session_id: string): legate.Session }
 ---@return table
 function M.new(deps)
@@ -25,8 +28,7 @@ function M.new(deps)
 
     ---@param current_session legate.Session
     ---@param prompt string
-    ---@return legate.Session
-    function helper.submit_session_prompt(current_session, prompt)
+    local function assert_can_submit(current_session, prompt)
         if current_session.status == 'waiting' then
             error('Cannot submit a new ACP prompt while this session already has a running turn')
         end
@@ -40,22 +42,90 @@ function M.new(deps)
         end
 
         if current_session.remote_sync_state == 'load_failed' then
-            error(
-                'ACP session is in load_failed recovery state; retry `:LegateLoadSession` or create a fresh remote with `:LegateRebindSession`'
-            )
+            error(LOAD_FAILED_RECOVERY_MESSAGE, 0)
         end
+    end
 
-        deps.continuity.set_draft_prompt(current_session, prompt)
-        deps.transport.ensure(current_session)
-        current_session = deps.continuity.begin_prompt(current_session, prompt)
-
+    ---@param current_session legate.Session
+    ---@param prompt string
+    local function render_if_selected(current_session, prompt)
         local selected_session = deps.continuity.current()
 
         if buffer.get() ~= nil and selected_session ~= nil and selected_session.id == current_session.id then
-            render.render(current_session, '')
+            render.render(current_session, prompt)
+        end
+    end
+
+    ---@param current_session legate.Session
+    ---@param prompt string
+    ---@return legate.Session
+    function helper.submit_session_prompt(current_session, prompt)
+        assert_can_submit(current_session, prompt)
+        deps.continuity.set_draft_prompt(current_session, prompt)
+        local prepare = deps.transport.prepare_prompt or deps.transport.ensure
+        local ok, err = pcall(prepare, current_session)
+
+        if not ok then
+            render_if_selected(current_session, current_session.draft_prompt or prompt)
+
+            if current_session.remote_sync_state == 'load_failed' then
+                error(LOAD_FAILED_RECOVERY_MESSAGE, 0)
+            end
+
+            error(err, 0)
         end
 
-        deps.transport.prompt(current_session, prompt)
+        current_session = deps.continuity.begin_prompt(current_session, prompt)
+
+        render_if_selected(current_session, '')
+
+        deps.transport.prompt(current_session, prompt, {
+            prepared = true,
+        })
+
+        return current_session
+    end
+
+    ---Submit a prompt while deferring blocking transport startup until after
+    ---the chat buffer has rendered the waiting state and Neovim can redraw.
+    ---@param current_session legate.Session
+    ---@param prompt string
+    ---@return legate.Session
+    function helper.submit_session_prompt_async(current_session, prompt)
+        assert_can_submit(current_session, prompt)
+        deps.continuity.set_draft_prompt(current_session, prompt)
+        current_session = deps.continuity.begin_prompt(current_session, prompt)
+        local turn_id = deps.continuity.current_turn_id(current_session)
+
+        render_if_selected(current_session, '')
+
+        vim.schedule(function()
+            if not deps.continuity.matches_turn(current_session, turn_id) then
+                return
+            end
+
+            local prepare = deps.transport.prepare_prompt or deps.transport.ensure
+            local ok, err = pcall(prepare, current_session)
+
+            if not ok then
+                local message = current_session.remote_sync_state == 'load_failed' and LOAD_FAILED_RECOVERY_MESSAGE
+                    or tostring(err)
+
+                deps.continuity.append_message(current_session, 'status', message)
+                deps.continuity.finish_prompt(current_session, 'cancelled')
+                render_if_selected(current_session, current_session.draft_prompt or '')
+                vim.notify(message, vim.log.levels.ERROR)
+                return
+            end
+
+            if not deps.continuity.matches_turn(current_session, turn_id) then
+                return
+            end
+
+            deps.transport.prompt(current_session, prompt, {
+                prepared = true,
+            })
+        end)
 
         return current_session
     end
@@ -131,6 +201,13 @@ function M.new(deps)
         local bufnr, current_session = helper.ensure_chat_surface()
         local prompt = input.get_prompt(bufnr)
         return helper.submit_session_prompt(current_session, prompt)
+    end
+
+    ---@return legate.Session
+    function helper.submit_prompt_async()
+        local bufnr, current_session = helper.ensure_chat_surface()
+        local prompt = input.get_prompt(bufnr)
+        return helper.submit_session_prompt_async(current_session, prompt)
     end
 
     ---@return legate.Session?

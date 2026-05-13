@@ -139,9 +139,7 @@ function M.decorate(bufnr, session, status_rows)
 
     for _, winid in ipairs(vim.fn.win_findbuf(bufnr)) do
         if vim.api.nvim_win_is_valid(winid) and vim.api.nvim_win_get_buf(winid) == bufnr then
-            vim.api.nvim_set_option_value('winbar', M.winbar(session), {
-                win = winid,
-            })
+            vim.wo[winid].winbar = M.winbar(session)
         end
     end
 end

@@ -47,10 +47,10 @@ end
 
 ---@return legate.TerminalBackendName
 local function requested_backend()
-    local backend = vim.env.LEGATE_LIVE_TERMINAL_BACKEND or vim.env.ACP_LIVE_TERMINAL_BACKEND or 'native'
+    local backend = vim.env.LEGATE_LIVE_TERMINAL_BACKEND or 'native'
 
     assert(
-        backend == 'native' or backend == 'terminal_manager',
+        backend == 'native' or backend == 'terminalia',
         string.format('Unsupported LEGATE_LIVE_TERMINAL_BACKEND: %s', backend)
     )
 
@@ -173,7 +173,7 @@ local function execute_tool_call_count(tool_calls)
     return count
 end
 
-local terminal_manager_configured = false
+local terminalia_configured = false
 
 for method_name in pairs(terminal_counts) do
     local original = terminal[method_name]
@@ -184,8 +184,8 @@ for method_name in pairs(terminal_counts) do
     end
 end
 
-local function setup_terminal_manager_backend()
-    if terminal_manager_configured then
+local function setup_terminalia_backend()
+    if terminalia_configured then
         return
     end
 
@@ -193,7 +193,7 @@ local function setup_terminal_manager_backend()
 
     vim.opt.runtimepath:prepend(repo)
 
-    local terminal_manager = require('terminalia')
+    local terminalia = require('terminalia')
 
     terminalia.setup({
         history_dir = vim.fn.tempname(),
@@ -202,7 +202,7 @@ local function setup_terminal_manager_backend()
     })
     terminalia.api.clear()
 
-    terminal_manager_configured = true
+    terminalia_configured = true
 end
 
 local prompt_timeout_ms = tonumber(vim.env.ACP_LIVE_PROMPT_TIMEOUT_MS or '') or 180000
@@ -374,8 +374,8 @@ local function instrumented_rpc_factory(opts)
 end
 
 local ok, err = xpcall(function()
-    if backend == 'terminal_manager' then
-        setup_terminal_manager_backend()
+    if backend == 'terminalia' then
+        setup_terminalia_backend()
     end
 
     transport._set_rpc_factory(instrumented_rpc_factory)

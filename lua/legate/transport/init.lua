@@ -18,6 +18,9 @@ local continuity = require('legate.session')
 local terminal = require('legate.terminal')
 
 ---@class legate.TransportModule
+---@field ensure fun(current_session: legate.Session)
+---@field prepare_prompt fun(current_session: legate.Session)
+---@field prompt fun(current_session: legate.Session, prompt: string, opts?: { prepared?: boolean })
 local M = {}
 
 ---@type legate.RpcClient?
@@ -73,6 +76,18 @@ local function should_rebind_connection(current_session)
             and continuity.transport_remote_id(current_session) ~= nil
             and continuity.transport_remote_id(current_session) ~= state.bound_remote_session_id
         )
+end
+
+---@param current_session legate.Session
+---@return boolean
+local function has_loaded_transport_binding(current_session)
+    local transport_remote_id = continuity.transport_remote_id(current_session)
+
+    return client ~= nil
+        and state.loaded_existing_session
+        and state.bound_local_session_id == current_session.id
+        and transport_remote_id ~= nil
+        and state.bound_remote_session_id == transport_remote_id
 end
 
 ---@param generation integer
@@ -342,6 +357,19 @@ function M.ensure(current_session)
 end
 
 ---@param current_session legate.Session
+function M.prepare_prompt(current_session)
+    if
+        current_session.remote_id ~= nil
+        and current_session.turn_id >= 1
+        and not has_loaded_transport_binding(current_session)
+    then
+        reset_connection()
+    end
+
+    M.ensure(current_session)
+end
+
+---@param current_session legate.Session
 function M.load(current_session)
     session_helper.prepare_connection(current_session)
     session_helper.establish_session(current_session, runtime_helper.drain_session_updates, {
@@ -359,8 +387,16 @@ end
 
 ---@param current_session legate.Session
 ---@param prompt string
-function M.prompt(current_session, prompt)
-    if current_session.remote_id ~= nil and current_session.turn_id > 1 then
+---@param opts? { prepared?: boolean }
+function M.prompt(current_session, prompt, opts)
+    local prepared = opts ~= nil and opts.prepared or false
+
+    if
+        not prepared
+        and current_session.remote_id ~= nil
+        and current_session.turn_id > 1
+        and not has_loaded_transport_binding(current_session)
+    then
         reset_connection()
     end
 

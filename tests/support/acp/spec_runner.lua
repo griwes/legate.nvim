@@ -13,8 +13,7 @@ function M.run(description, body_path)
         local fake_supports_load
         local fake_on_load
         local fake_load_error
-        local terminal_manager_modules = {
-            'terminal_manager',
+        local terminalia_modules = {
             'terminalia.api',
             'terminalia.commands',
             'terminalia.config',
@@ -115,22 +114,21 @@ function M.run(description, body_path)
                 end
         end
 
-        local function clear_terminal_manager_modules()
-            for _, module_name in ipairs(terminal_manager_modules) do
+        local function clear_terminalia_modules()
+            for _, module_name in ipairs(terminalia_modules) do
                 package.loaded[module_name] = nil
             end
         end
 
-        local function setup_terminal_manager()
+        local function setup_terminalia()
             local history_dir = vim.fn.tempname()
             local state_file = vim.fn.tempname()
             local repo = vim.fn.fnamemodify(vim.fn.getcwd() .. '/../terminalia.nvim', ':p')
 
             vim.opt.runtimepath:prepend(repo)
-            clear_terminal_manager_modules()
+            clear_terminalia_modules()
 
-            local terminal_manager = require('terminalia')
-            local terminalia = terminal_manager
+            local terminalia = require('terminalia')
 
             terminalia.setup({
                 history_dir = history_dir,
@@ -139,10 +137,10 @@ function M.run(description, body_path)
             })
             terminalia.api.clear()
 
-            return terminal_manager
+            return terminalia
         end
 
-        local function clear_terminal_manager_state()
+        local function clear_terminalia_state()
             if package.loaded['terminalia'] == nil then
                 return
             end
@@ -335,7 +333,7 @@ function M.run(description, body_path)
                     package.loaded[name] = nil
                 end
             end
-            clear_terminal_manager_modules()
+            clear_terminalia_modules()
             vim.g.loaded_acp = nil
 
             plugin = require('legate')
@@ -365,8 +363,8 @@ function M.run(description, body_path)
 
         after_each(function()
             api.clear()
-            clear_terminal_manager_state()
-            clear_terminal_manager_modules()
+            clear_terminalia_state()
+            clear_terminalia_modules()
         end)
         local function body_env()
             local readers = {
@@ -403,8 +401,8 @@ function M.run(description, body_path)
                 fake_load_error = function()
                     return fake_load_error
                 end,
-                terminal_manager_modules = function()
-                    return terminal_manager_modules
+                terminalia_modules = function()
+                    return terminalia_modules
                 end,
                 temp_path = function()
                     return temp_path
@@ -433,14 +431,14 @@ function M.run(description, body_path)
                 with_fast_event_schedule = function()
                     return with_fast_event_schedule
                 end,
-                clear_terminal_manager_modules = function()
-                    return clear_terminal_manager_modules
+                clear_terminalia_modules = function()
+                    return clear_terminalia_modules
                 end,
-                setup_terminal_manager = function()
-                    return setup_terminal_manager
+                setup_terminalia = function()
+                    return setup_terminalia
                 end,
-                clear_terminal_manager_state = function()
-                    return clear_terminal_manager_state
+                clear_terminalia_state = function()
+                    return clear_terminalia_state
                 end,
                 install_fake_transport = function()
                     return install_fake_transport

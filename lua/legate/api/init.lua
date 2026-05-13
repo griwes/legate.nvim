@@ -207,6 +207,7 @@ M.pick_adapter = session_helper.pick_adapter
 M.open_chat = prompt_helper.open_chat
 M.append_message = prompt_helper.append_message
 M.submit_prompt = prompt_helper.submit_prompt
+M.submit_prompt_async = prompt_helper.submit_prompt_async
 M.cancel_prompt = prompt_helper.cancel_prompt
 M.get_prompt = prompt_helper.get_prompt
 M.set_prompt = prompt_helper.set_prompt

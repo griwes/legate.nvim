@@ -3135,7 +3135,7 @@ it('rejects fs/read_text_file outside allowed roots', function()
 end)
 
 it('writes file content via fs/write_text_file into a hidden buffer', function()
-    local path = vim.fn.getcwd() .. '/tests/fixtures/write-file.txt'
+    local path = vim.fn.getcwd() .. '/.tests/write-file.txt'
     vim.fn.mkdir(vim.fn.fnamemodify(path, ':h'), 'p')
     os.remove(path)
 
@@ -3805,14 +3805,14 @@ it('releases a terminal and invalidates its id', function()
     assert.is_not_nil(output.error)
 end)
 
-it('routes terminal requests through terminal-manager when configured', function()
-    local terminal_manager = setup_terminal_manager()
+it('routes terminal requests through Terminalia when configured', function()
+    setup_terminalia()
 
     plugin.setup({
-        terminal_backend = 'terminal_manager',
+        terminal_backend = 'terminalia',
     })
     api.open_chat()
-    api.set_prompt('run terminal-manager backend')
+    api.set_prompt('run terminalia backend')
     api.submit_prompt()
 
     local created = fake_client:emit_request('terminal/create', {
@@ -3865,14 +3865,14 @@ it('routes terminal requests through terminal-manager when configured', function
     assert.is_not_nil(output_after_release.error)
 end)
 
-it('applies outputByteLimit in the terminal-manager backend', function()
-    setup_terminal_manager()
+it('applies outputByteLimit in the Terminalia backend', function()
+    setup_terminalia()
 
     plugin.setup({
-        terminal_backend = 'terminal_manager',
+        terminal_backend = 'terminalia',
     })
     api.open_chat()
-    api.set_prompt('truncate terminal-manager backend')
+    api.set_prompt('truncate terminalia backend')
     api.submit_prompt()
 
     local created = fake_client:emit_request('terminal/create', {

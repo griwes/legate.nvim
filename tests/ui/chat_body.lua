@@ -471,9 +471,7 @@ it('renders session status in the winbar and shows waiting state as virtual text
 
     assert.are.equal(
         string.format('ACP  %s  adapter=codex  waiting  sync=created  remote=sess_123', current_session.id),
-        vim.api.nvim_get_option_value('winbar', {
-            win = 0,
-        })
+        vim.wo[0].winbar
     )
     assert.are.equal(1, #marks)
     assert.are.equal(input.prompt_header_line(bufnr) - 4, marks[1][2])
@@ -486,9 +484,7 @@ it('renders session status in the winbar and shows waiting state as virtual text
 
     assert.are.equal(
         string.format('ACP  %s  adapter=codex  idle  sync=created  remote=sess_123', current_session.id),
-        vim.api.nvim_get_option_value('winbar', {
-            win = 0,
-        })
+        vim.wo[0].winbar
     )
     assert.are.same(
         {},
@@ -763,6 +759,28 @@ it('keeps the transcript read-only while leaving the prompt naturally editable',
     api.submit_prompt()
 
     assert.is_false(vim.bo[bufnr].modifiable)
+end)
+
+it('keeps ACP prompt edits from dirtying the plugin-owned buffer', function()
+    local bufnr = api.open_chat()
+    local input = require('legate.ui.input')
+    local edit = require('legate.ui.edit')
+
+    vim.api.nvim_win_set_cursor(0, {
+        input.prompt_start_line(bufnr),
+        0,
+    })
+    edit.refresh(bufnr)
+    vim.api.nvim_buf_set_lines(bufnr, input.prompt_start_line(bufnr) - 1, -1, false, {
+        'typed prompt',
+    })
+
+    wait_until(function()
+        return api.current_session().draft_prompt == 'typed prompt' and not vim.bo[bufnr].modified
+    end)
+
+    assert.are.equal('typed prompt', api.current_session().draft_prompt)
+    assert.is_false(vim.bo[bufnr].modified)
 end)
 
 it('limits editing to the ACP prompt region', function()

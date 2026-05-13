@@ -1,3 +1,61 @@
+---@param value string
+---@return string
+local function encode_path_component(value)
+    return value:gsub('[^%w._-]', function(char)
+        return string.format('%%%02X', char:byte())
+    end)
+end
+
+---@param id string
+---@return string
+local function session_filename(id)
+    return string.format('%s.json', encode_path_component(id))
+end
+
+---@param path string
+---@param payload table
+local function write_json(path, payload)
+    vim.fn.mkdir(vim.fn.fnamemodify(path, ':h'), 'p')
+    vim.fn.writefile({ vim.json.encode(payload) }, path)
+end
+
+---@param session table
+---@return table
+local function persisted_session_index_entry(session)
+    return {
+        id = session.id,
+        ordinal = session.ordinal,
+        adapter_name = session.adapter_name,
+        status = session.status,
+        remote_id = session.remote_id,
+        remote_sync_state = session.remote_sync_state,
+        cwd = session.cwd,
+        created_at = session.created_at,
+        updated_at = session.updated_at,
+        file = session_filename(session.id),
+    }
+end
+
+---@param state_file string
+---@param payload table
+local function write_persisted_sessions(state_file, payload)
+    local state_dir = string.format('%s.d', state_file)
+    local sessions = vim.islist(payload.sessions) and payload.sessions or {}
+
+    for _, session in ipairs(sessions) do
+        write_json(vim.fs.joinpath(state_dir, 'sessions', session_filename(session.id)), session)
+    end
+
+    write_json(state_file, {
+        version = 1,
+        current_id = payload.current_id,
+        next_ordinal = payload.next_ordinal,
+        next_message_id = payload.next_message_id,
+        next_pending_approval_ordinal = payload.next_pending_approval_ordinal,
+        sessions = vim.tbl_map(persisted_session_index_entry, sessions),
+    })
+end
+
 it('registers ACP user commands', function()
     local commands = {
         'LegateChat',
@@ -39,6 +97,37 @@ it('registers ACP user commands', function()
 
         assert.is_not_nil(definition)
     end
+end)
+
+it('defers transport startup for LegateSubmit until after the waiting state renders', function()
+    local scheduled = {}
+    local original_schedule = vim.schedule
+    local bufnr = api.open_chat()
+
+    api.set_prompt('deferred command submit')
+    vim.schedule = function(callback)
+        table.insert(scheduled, callback)
+    end
+
+    local ok, err = pcall(vim.cmd, 'LegateSubmit')
+    vim.schedule = original_schedule
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+    assert.is_true(ok, err)
+    assert.are.equal('waiting', api.current_session().status)
+    assert.is_true(vim.tbl_contains(lines, '### User'))
+    assert.is_true(vim.tbl_contains(lines, 'deferred command submit'))
+    assert.is_nil(fake_client)
+    assert.are.equal(1, #scheduled)
+
+    scheduled[1]()
+
+    assert.is_not_nil(fake_client)
+    assert.are.equal('initialize', fake_client.sync_calls[1].method)
+    assert.are.equal('authenticate', fake_client.sync_calls[2].method)
+    assert.are.equal('session/new', fake_client.sync_calls[3].method)
+    assert.are.equal('session/prompt', fake_client.async_calls[1].method)
 end)
 
 it('lists local ACP sessions through the command surface', function()
@@ -828,34 +917,69 @@ it('loads an ACP session through the command surface', function()
     assert.are.equal('created', api.current_session().remote_sync_state)
 end)
 
+it('reports ACP session load failures through the command surface without throwing', function()
+    local bufnr = api.open_chat()
+    fake_supports_load = true
+    api.set_prompt('first turn')
+    api.submit_prompt()
+    fake_client:resolve({
+        stopReason = 'end_turn',
+    })
+    fake_load_error = 'Resource not found'
+
+    local notifications = {}
+    local original_notify = vim.notify
+    vim.notify = function(message, level)
+        table.insert(notifications, {
+            message = message,
+            level = level,
+        })
+    end
+
+    local ok, err = pcall(vim.cmd, 'LegateLoadSession')
+
+    vim.notify = original_notify
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+    assert.is_true(ok, err)
+    assert.are.equal(1, #notifications)
+    assert.are.equal(
+        'ACP session is in load_failed recovery state; retry `:LegateLoadSession` or create a fresh remote with `:LegateRebindSession`',
+        notifications[1].message
+    )
+    assert.are.equal(vim.log.levels.ERROR, notifications[1].level)
+    assert.are.equal('load_failed', api.current_session().remote_sync_state)
+    assert.are.equal('Resource not found', api.current_session().remote_sync_error)
+    assert.is_true(vim.tbl_contains(lines, '> Remote Sync Error: `Resource not found`'))
+end)
+
 it('continues the newest persisted ACP session through the command surface', function()
     local state_file = temp_path('acp-command-continue-last.json')
 
-    vim.fn.writefile({
-        vim.json.encode({
-            current_id = 'acp:1',
-            next_ordinal = 3,
-            next_message_id = 1,
-            sessions = {
-                {
-                    id = 'acp:1',
-                    ordinal = 1,
-                    status = 'idle',
-                    messages = {},
-                    draft_prompt = 'older command draft',
-                    updated_at = 10,
-                },
-                {
-                    id = 'acp:2',
-                    ordinal = 2,
-                    status = 'idle',
-                    messages = {},
-                    draft_prompt = 'newer command draft',
-                    updated_at = 20,
-                },
+    write_persisted_sessions(state_file, {
+        current_id = 'acp:1',
+        next_ordinal = 3,
+        next_message_id = 1,
+        sessions = {
+            {
+                id = 'acp:1',
+                ordinal = 1,
+                status = 'idle',
+                messages = {},
+                draft_prompt = 'older command draft',
+                updated_at = 10,
             },
-        }),
-    }, state_file)
+            {
+                id = 'acp:2',
+                ordinal = 2,
+                status = 'idle',
+                messages = {},
+                draft_prompt = 'newer command draft',
+                updated_at = 20,
+            },
+        },
+    })
 
     plugin.setup({
         session_state_file = state_file,
@@ -881,9 +1005,12 @@ it('rebinds a load_failed ACP session through the command surface', function()
 
     fake_load_error = 'session/load failed'
 
-    assert.has_error(function()
-        api.load_session()
-    end, 'session/load failed')
+    assert.has_error(
+        function()
+            api.load_session()
+        end,
+        'ACP session is in load_failed recovery state; retry `:LegateLoadSession` or create a fresh remote with `:LegateRebindSession`'
+    )
 
     vim.cmd('LegateRebindSession')
 

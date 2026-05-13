@@ -79,6 +79,10 @@ local function handle_change(bufnr, firstline)
         return
     end
 
+    vim.schedule(function()
+        buffer.mark_clean(bufnr)
+    end)
+
     local current_session = continuity.current()
 
     if current_session == nil then
