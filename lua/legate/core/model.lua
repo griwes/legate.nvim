@@ -79,6 +79,7 @@
 ---@field messages legate.Message[]
 ---@field draft_prompt string
 ---@field pending_prompt string?
+---@field queued_prompts string[]
 ---@field pending_approvals legate.PendingApproval[]
 ---@field remote_id string?
 ---@field transport_remote_id string?

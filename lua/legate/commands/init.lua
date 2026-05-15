@@ -304,7 +304,29 @@ function M.ensure()
             api().submit_prompt_async()
         end)
     end, {
-        desc = 'Submit the Legate prompt from the chat buffer',
+        desc = 'Submit the Legate prompt, queueing it when another turn is running',
+    })
+
+    create('LegateQueue', function()
+        run_user_action(function()
+            api().queue_prompt()
+        end)
+    end, {
+        desc = 'Queue the Legate prompt for a future turn',
+    })
+
+    create('LegateSteer', function()
+        run_user_action(function()
+            api().steer_prompt()
+        end)
+    end, {
+        desc = 'Send the Legate prompt as live steering for the running turn',
+    })
+
+    create('LegateInterrupt', function()
+        api().cancel_prompt()
+    end, {
+        desc = 'Interrupt the active Legate prompt turn',
     })
 
     create('LegateCancel', function()

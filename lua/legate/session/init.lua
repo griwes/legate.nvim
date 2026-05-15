@@ -152,6 +152,10 @@ M.append_message = state_helper.append_message
 M.append_chunk = state_helper.append_chunk
 M.set_draft_prompt = state_helper.set_draft_prompt
 M.begin_prompt = state_helper.begin_prompt
+M.enqueue_prompt = state_helper.enqueue_prompt
+M.pop_queued_prompt = state_helper.pop_queued_prompt
+M.queued_prompt_count = state_helper.queued_prompt_count
+M.clear_queued_prompts = state_helper.clear_queued_prompts
 M.current_turn_id = state_helper.current_turn_id
 M.matches_turn = state_helper.matches_turn
 M.finish_prompt = state_helper.finish_prompt
@@ -232,6 +236,9 @@ publish_mutation('append_message')
 publish_mutation('append_chunk')
 publish_mutation('set_draft_prompt')
 publish_mutation('begin_prompt')
+publish_mutation('enqueue_prompt')
+publish_mutation('pop_queued_prompt')
+publish_mutation('clear_queued_prompts')
 publish_mutation('finish_prompt')
 publish_mutation('set_remote_id')
 publish_mutation('set_transport_remote_id')

@@ -92,6 +92,48 @@ function M.new(deps)
     end
 
     ---@param current_session legate.Session
+    ---@param prompt string
+    ---@return legate.Session
+    function helper.enqueue_prompt(current_session, prompt)
+        current_session.queued_prompts = current_session.queued_prompts or {}
+        table.insert(current_session.queued_prompts, prompt)
+        current_session.draft_prompt = ''
+        current_session.updated_at = deps.now()
+
+        return current_session
+    end
+
+    ---@param current_session legate.Session
+    ---@return string?
+    function helper.pop_queued_prompt(current_session)
+        current_session.queued_prompts = current_session.queued_prompts or {}
+
+        if #current_session.queued_prompts == 0 then
+            return nil
+        end
+
+        local prompt = table.remove(current_session.queued_prompts, 1)
+        current_session.updated_at = deps.now()
+
+        return prompt
+    end
+
+    ---@param current_session legate.Session
+    ---@return integer
+    function helper.queued_prompt_count(current_session)
+        return #(current_session.queued_prompts or {})
+    end
+
+    ---@param current_session legate.Session
+    ---@return legate.Session
+    function helper.clear_queued_prompts(current_session)
+        current_session.queued_prompts = {}
+        current_session.updated_at = deps.now()
+
+        return current_session
+    end
+
+    ---@param current_session legate.Session
     ---@return integer
     function helper.current_turn_id(current_session)
         return current_session.turn_id

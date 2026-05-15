@@ -190,6 +190,24 @@ function M.new(deps)
         return normalized
     end
 
+    ---@param prompts any
+    ---@return string[]
+    local function normalize_queued_prompts(prompts)
+        if type(prompts) ~= 'table' then
+            return {}
+        end
+
+        local normalized = {}
+
+        for _, prompt in ipairs(prompts) do
+            if type(prompt) == 'string' and prompt ~= '' then
+                table.insert(normalized, prompt)
+            end
+        end
+
+        return normalized
+    end
+
     ---@param current_session legate.Session
     ---@return legate.Session
     function helper.persisted_session(current_session)
@@ -234,6 +252,7 @@ function M.new(deps)
         restored.status = normalize_status(restored.status)
         restored.messages = type(restored.messages) == 'table' and restored.messages or {}
         restored.draft_prompt = type(restored.draft_prompt) == 'string' and restored.draft_prompt or ''
+        restored.queued_prompts = normalize_queued_prompts(restored.queued_prompts)
 
         if
             type(restored.pending_prompt) == 'string'

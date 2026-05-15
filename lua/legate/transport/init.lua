@@ -20,7 +20,8 @@ local terminal = require('legate.terminal')
 ---@class legate.TransportModule
 ---@field ensure fun(current_session: legate.Session)
 ---@field prepare_prompt fun(current_session: legate.Session)
----@field prompt fun(current_session: legate.Session, prompt: string, opts?: { prepared?: boolean })
+---@field prompt fun(current_session: legate.Session, prompt: string, opts?: { prepared?: boolean, on_finish?: fun(current_session: legate.Session, stop_reason: legate.StopReason) })
+---@field steer fun(current_session: legate.Session, prompt: string)
 local M = {}
 
 ---@type legate.RpcClient?
@@ -238,6 +239,18 @@ local function prompt_content(current_session, prompt)
     return prompt_blocks(current_session, guided_prompt)
 end
 
+---@param current_session legate.Session
+---@param prompt string
+---@return legate.ContentBlock[]
+local function steering_content(current_session, prompt)
+    return {
+        {
+            type = 'text',
+            text = prompt_pipeline.decorate(prompt, state.agent_capabilities, current_session),
+        },
+    }
+end
+
 ---@return legate.TransportContext
 local function build_context()
     return context.new({
@@ -387,7 +400,7 @@ end
 
 ---@param current_session legate.Session
 ---@param prompt string
----@param opts? { prepared?: boolean }
+---@param opts? { prepared?: boolean, on_finish?: fun(current_session: legate.Session, stop_reason: legate.StopReason) }
 function M.prompt(current_session, prompt, opts)
     local prepared = opts ~= nil and opts.prepared or false
 
@@ -425,6 +438,41 @@ function M.prompt(current_session, prompt, opts)
 
         ---@cast result legate.PromptResult
         runtime_helper.finish_turn(current_session, result.stopReason)
+
+        if opts ~= nil and type(opts.on_finish) == 'function' then
+            opts.on_finish(current_session, result.stopReason)
+        end
+    end)
+end
+
+---@param current_session legate.Session
+---@param prompt string
+function M.steer(current_session, prompt)
+    if current_session.remote_id == nil then
+        error(string.format('ACP session is not bound: %s', current_session.id))
+    end
+
+    M.ensure(current_session)
+    state.active_session = current_session
+    local generation = client_generation
+    local turn_id = continuity.current_turn_id(current_session)
+
+    ensure_client(current_session):request(methods.SESSION_PROMPT, {
+        sessionId = current_session.remote_id,
+        prompt = steering_content(current_session, prompt),
+    }, function(_, rpc_error)
+        if not is_live_generation(generation) then
+            return
+        end
+
+        if not continuity.matches_turn(current_session, turn_id) then
+            return
+        end
+
+        if rpc_error ~= nil then
+            continuity.append_message(current_session, 'status', rpc_error.message)
+            runtime_helper.rerender(current_session)
+        end
     end)
 end
 

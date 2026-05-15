@@ -138,6 +138,35 @@ local function prompt_lines(prompt)
     })
 end
 
+---@param prompt string
+---@return string
+local function prompt_preview(prompt)
+    local normalized = vim.trim(prompt:gsub('[\r\t\n]+', ' '))
+
+    if #normalized <= 120 then
+        return normalized
+    end
+
+    return normalized:sub(1, 117) .. '...'
+end
+
+---@param prompts string[]
+---@return string[]
+local function format_queue(prompts)
+    local lines = {
+        '## Queue',
+        '',
+    }
+
+    for index, prompt in ipairs(prompts) do
+        table.insert(lines, string.format('%d. %s', index, prompt_preview(prompt)))
+    end
+
+    table.insert(lines, '')
+
+    return lines
+end
+
 ---@class legate.RenderStatusRow
 ---@field row integer
 ---@field message_id integer
@@ -219,6 +248,14 @@ local function build_layout(current_session, prompt)
             if not (message.role == 'status' and next_message ~= nil and next_message.role == 'status') then
                 table.insert(lines, '')
             end
+        end
+    end
+
+    if #(current_session.queued_prompts or {}) > 0 then
+        table.insert(lines, '')
+
+        for _, line in ipairs(format_queue(current_session.queued_prompts)) do
+            table.insert(lines, line)
         end
     end
 

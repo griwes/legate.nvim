@@ -19,6 +19,7 @@ function M.new(deps)
             status = 'idle',
             messages = {},
             draft_prompt = '',
+            queued_prompts = {},
             pending_approvals = {},
             plan_entries = {},
             available_commands = {},

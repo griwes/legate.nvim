@@ -28,17 +28,23 @@ function M.new(deps)
 
     ---@param current_session legate.Session
     ---@param prompt string
-    local function assert_can_submit(current_session, prompt)
+    local function assert_nonempty_prompt(prompt)
+        if prompt == '' then
+            error('ACP prompt is empty')
+        end
+    end
+
+    ---@param current_session legate.Session
+    ---@param prompt string
+    local function assert_can_start_turn(current_session, prompt)
+        assert_nonempty_prompt(prompt)
+
         if current_session.status == 'waiting' then
             error('Cannot submit a new ACP prompt while this session already has a running turn')
         end
 
         if deps.continuity.waiting() ~= nil then
             error('Cannot submit a new ACP prompt while another session turn is still running')
-        end
-
-        if prompt == '' then
-            error('ACP prompt is empty')
         end
 
         if current_session.remote_sync_state == 'load_failed' then
@@ -59,40 +65,20 @@ function M.new(deps)
     ---@param current_session legate.Session
     ---@param prompt string
     ---@return legate.Session
-    function helper.submit_session_prompt(current_session, prompt)
-        assert_can_submit(current_session, prompt)
-        deps.continuity.set_draft_prompt(current_session, prompt)
-        local prepare = deps.transport.prepare_prompt or deps.transport.ensure
-        local ok, err = pcall(prepare, current_session)
+    function helper.queue_session_prompt(current_session, prompt)
+        assert_nonempty_prompt(prompt)
 
-        if not ok then
-            render_if_selected(current_session, current_session.draft_prompt or prompt)
-
-            if current_session.remote_sync_state == 'load_failed' then
-                error(LOAD_FAILED_RECOVERY_MESSAGE, 0)
-            end
-
-            error(err, 0)
-        end
-
-        current_session = deps.continuity.begin_prompt(current_session, prompt)
-
+        current_session = deps.continuity.enqueue_prompt(current_session, prompt)
         render_if_selected(current_session, '')
-
-        deps.transport.prompt(current_session, prompt, {
-            prepared = true,
-        })
 
         return current_session
     end
 
-    ---Submit a prompt while deferring blocking transport startup until after
-    ---the chat buffer has rendered the waiting state and Neovim can redraw.
     ---@param current_session legate.Session
     ---@param prompt string
     ---@return legate.Session
-    function helper.submit_session_prompt_async(current_session, prompt)
-        assert_can_submit(current_session, prompt)
+    local function start_session_prompt_async(current_session, prompt)
+        assert_can_start_turn(current_session, prompt)
         deps.continuity.set_draft_prompt(current_session, prompt)
         current_session = deps.continuity.begin_prompt(current_session, prompt)
         local turn_id = deps.continuity.current_turn_id(current_session)
@@ -124,10 +110,99 @@ function M.new(deps)
 
             deps.transport.prompt(current_session, prompt, {
                 prepared = true,
+                on_finish = function(finished_session, stop_reason)
+                    helper.drain_queue(finished_session, stop_reason)
+                end,
             })
         end)
 
         return current_session
+    end
+
+    ---@param current_session legate.Session
+    ---@param stop_reason? legate.StopReason
+    ---@return boolean
+    function helper.drain_queue(current_session, stop_reason)
+        if stop_reason == 'cancelled' then
+            render_if_selected(current_session, current_session.draft_prompt or '')
+            return false
+        end
+
+        if current_session.status == 'waiting' or deps.continuity.waiting() ~= nil then
+            render_if_selected(current_session, current_session.draft_prompt or '')
+            return false
+        end
+
+        local queued_session = current_session
+        local prompt = deps.continuity.pop_queued_prompt(queued_session)
+
+        if prompt == nil then
+            for _, candidate in ipairs(deps.continuity.list()) do
+                if candidate.id ~= current_session.id and deps.continuity.queued_prompt_count(candidate) > 0 then
+                    queued_session = candidate
+                    prompt = deps.continuity.pop_queued_prompt(candidate)
+                    break
+                end
+            end
+        end
+
+        if prompt == nil then
+            render_if_selected(current_session, current_session.draft_prompt or '')
+            return false
+        end
+
+        start_session_prompt_async(queued_session, prompt)
+        return true
+    end
+
+    ---@param current_session legate.Session
+    ---@param prompt string
+    ---@return legate.Session
+    function helper.submit_session_prompt(current_session, prompt)
+        if current_session.status == 'waiting' or deps.continuity.waiting() ~= nil then
+            return helper.queue_session_prompt(current_session, prompt)
+        end
+
+        assert_can_start_turn(current_session, prompt)
+        deps.continuity.set_draft_prompt(current_session, prompt)
+        local prepare = deps.transport.prepare_prompt or deps.transport.ensure
+        local ok, err = pcall(prepare, current_session)
+
+        if not ok then
+            render_if_selected(current_session, current_session.draft_prompt or prompt)
+
+            if current_session.remote_sync_state == 'load_failed' then
+                error(LOAD_FAILED_RECOVERY_MESSAGE, 0)
+            end
+
+            error(err, 0)
+        end
+
+        current_session = deps.continuity.begin_prompt(current_session, prompt)
+
+        render_if_selected(current_session, '')
+
+        deps.transport.prompt(current_session, prompt, {
+            prepared = true,
+            on_finish = function(finished_session, stop_reason)
+                helper.drain_queue(finished_session, stop_reason)
+            end,
+        })
+
+        return current_session
+    end
+
+    ---Submit a prompt while deferring blocking transport startup until after
+    ---the chat buffer has rendered the waiting state and Neovim can redraw.
+    ---@param current_session legate.Session
+    ---@param prompt string
+    ---@return legate.Session
+    function helper.submit_session_prompt_async(current_session, prompt)
+        if current_session.status == 'waiting' or deps.continuity.waiting() ~= nil then
+            return helper.queue_session_prompt(current_session, prompt)
+        end
+
+        return start_session_prompt_async(current_session, prompt)
     end
 
     ---@param command legate.AvailableCommand
@@ -208,6 +283,41 @@ function M.new(deps)
         local bufnr, current_session = helper.ensure_chat_surface()
         local prompt = input.get_prompt(bufnr)
         return helper.submit_session_prompt_async(current_session, prompt)
+    end
+
+    ---@return legate.Session
+    function helper.queue_prompt()
+        local bufnr, current_session = helper.ensure_chat_surface()
+        local prompt = input.get_prompt(bufnr)
+
+        return helper.queue_session_prompt(current_session, prompt)
+    end
+
+    ---@return legate.Session
+    function helper.steer_prompt()
+        local bufnr, current_session = helper.ensure_chat_surface()
+        local waiting_session = deps.continuity.waiting()
+        local prompt = input.get_prompt(bufnr)
+
+        if current_session.status ~= 'waiting' then
+            if waiting_session == nil then
+                error('Cannot steer ACP prompt: no prompt turn is running')
+            end
+
+            deps.select_session(waiting_session.id)
+            current_session = waiting_session
+            bufnr = helper.ensure_chat_surface()
+        end
+
+        assert_nonempty_prompt(prompt)
+
+        deps.continuity.append_message(current_session, 'user', prompt)
+        deps.continuity.set_draft_prompt(current_session, '')
+        input.set_prompt(bufnr, '')
+        render_if_selected(current_session, '')
+        deps.transport.steer(current_session, prompt)
+
+        return current_session
     end
 
     ---@return legate.Session?

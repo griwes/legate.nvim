@@ -288,6 +288,8 @@ function M.run(description, body_path)
                         method = method,
                         params = vim.deepcopy(params),
                     })
+                    self.callbacks = self.callbacks or {}
+                    table.insert(self.callbacks, callback)
                     self.callback = callback
                 end
 
@@ -318,9 +320,15 @@ function M.run(description, body_path)
                     return response
                 end
 
-                function fake_client:resolve(result, error)
-                    assert.is_not_nil(self.callback)
-                    self.callback(result, error)
+                function fake_client:resolve(result, error, index)
+                    self.callbacks = self.callbacks or {}
+                    local callback_index = index or 1
+                    local callback = self.callbacks[callback_index]
+
+                    assert.is_not_nil(callback)
+                    table.remove(self.callbacks, callback_index)
+                    self.callback = self.callbacks[#self.callbacks]
+                    callback(result, error)
                 end
 
                 return fake_client

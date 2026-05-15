@@ -56,8 +56,11 @@ Example local `lazy.nvim` spec:
 - `:LegatePickSlashCommand` chooses and submits a Legate slash command through `vim.ui.select`, prompting for freeform input when the command expects it
 - `:LegateCloseSession [id]` closes a local Legate session, defaulting to the current one; with `auto_create_session = true`, closing the last session immediately replaces it with a fresh empty session
 - `:LegatePickCloseSession` closes a local Legate session through `vim.ui.select`
-- `:LegateSubmit` submits the editable prompt section from the chat buffer into the current transcript
-- `:LegateCancel` cancels the active live ACP turn, even if that turn belongs to a different local session than the one currently selected
+- `:LegateSubmit` submits the editable prompt section from the chat buffer into the current transcript, or queues it when a live turn is already running
+- `:LegateQueue` explicitly queues the editable prompt section for a future turn
+- `:LegateSteer` sends the editable prompt section as live steering for the currently running turn
+- `:LegateInterrupt` interrupts the active live ACP turn
+- `:LegateCancel` remains as a compatibility spelling for interrupting the active live ACP turn, even if that turn belongs to a different local session than the one currently selected
 
 ## Current Shape
 
@@ -103,6 +106,7 @@ Example local `lazy.nvim` spec:
 - when `persist_sessions = true`, ACP writes local session state on `VimLeavePre`; `restore_sessions_on_setup = true` opts into restoring that local state during `setup()`
 - `:LegateContinueLastSession` restores local state when needed, selects the most recently updated local session, and opens the shared chat buffer without implicitly loading remote ACP state
 - prompt execution is still serialized globally for now; multiple local sessions are supported, but only one live prompt turn runs at a time
+- running turns now support Codex CLI-style control flow: steering uses a live `session/prompt`, submit-while-running queues future prompts, and queues drain automatically after non-cancelled turn completion
 - this transport slice has been smoke-tested against `codex-acp 0.11.1` using the `chatgpt` auth method
 - a repo-owned opt-in live restore smoke now proves that a persisted local Legate session can be restored in a fresh Neovim process, explicitly rebound through `session/load`, and also that a follow-up without explicit load does not auto-resume the old remote
 - a second repo-owned opt-in live smoke now proves `load_failed` recovery against real `codex-acp`: retrying the recorded remote id fails closed as expected, `LegateRebindSession` creates a fresh remote session, and a follow-up prompt succeeds on that rebound session
