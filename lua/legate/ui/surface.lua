@@ -3,6 +3,7 @@ local M = {}
 
 local namespace = vim.api.nvim_create_namespace('legate.surface')
 local highlights_ready = false
+local PIN_BOTTOM_KEY = 'legate_chat_pin_bottom'
 
 ---@class legate.HighlightPalette
 ---@field success integer
@@ -55,21 +56,52 @@ end
 ---@field at_bottom boolean
 ---@field cursor integer[]
 ---@field cursor_at_end boolean
+---@field pin_to_bottom boolean
 ---@field view table
+
+---@param session legate.Session
+---@return statuesque.RenderSpec[]
+function M.winbar_parts(session)
+    local parts = {
+        { text = 'ACP', role = 'legate.icon', hl = 'LegateStatusPending' },
+        { text = ' ' .. session.id, role = 'legate.session', hl = 'LegateStatusNeutral' },
+        {
+            text = string.format(' adapter=%s', session.adapter_name),
+            role = 'legate.adapter',
+            hl = 'LegateStatusNeutral',
+        },
+        { text = ' ' .. session.status, role = 'legate.status', hl = 'LegateStatusSuccess' },
+        {
+            text = string.format(' sync=%s', session.remote_sync_state),
+            role = 'legate.sync',
+            hl = 'LegateStatusNeutral',
+        },
+    }
+
+    if session.remote_id ~= nil then
+        table.insert(parts, {
+            text = string.format(' remote=%s', session.remote_id),
+            role = 'legate.remote',
+            hl = 'LegateStatusNeutral',
+        })
+    end
+
+    if session.status == 'waiting' then
+        parts[4].hl = 'LegateStatusPending'
+    elseif session.status == 'cancelled' then
+        parts[4].hl = 'LegateStatusFailure'
+    end
+
+    return parts
+end
 
 ---@param session legate.Session
 ---@return string
 function M.winbar(session)
-    local parts = {
-        'ACP',
-        session.id,
-        string.format('adapter=%s', session.adapter_name),
-        session.status,
-        string.format('sync=%s', session.remote_sync_state),
-    }
+    local parts = {}
 
-    if session.remote_id ~= nil then
-        table.insert(parts, string.format('remote=%s', session.remote_id))
+    for _, part in ipairs(M.winbar_parts(session)) do
+        parts[#parts + 1] = vim.trim(part.text or '')
     end
 
     return table.concat(parts, '  ')
@@ -85,11 +117,22 @@ function M.capture_window_states(bufnr)
         if vim.api.nvim_win_is_valid(winid) and vim.api.nvim_win_get_buf(winid) == bufnr then
             local info = vim.fn.getwininfo(winid)[1]
             local cursor = vim.api.nvim_win_get_cursor(winid)
+            local at_bottom = info ~= nil and info.botline >= line_count
+            local cursor_at_end = cursor[1] >= line_count
+            local scrolled_to_bottom = at_bottom and info ~= nil and info.topline > 1
+            local pin_to_bottom = cursor_at_end or scrolled_to_bottom
+
+            if pin_to_bottom then
+                vim.w[winid][PIN_BOTTOM_KEY] = true
+            else
+                vim.w[winid][PIN_BOTTOM_KEY] = false
+            end
 
             states[winid] = {
-                at_bottom = info ~= nil and info.botline >= line_count,
+                at_bottom = at_bottom,
                 cursor = cursor,
-                cursor_at_end = cursor[1] >= line_count,
+                cursor_at_end = cursor_at_end,
+                pin_to_bottom = pin_to_bottom,
                 view = vim.api.nvim_win_call(winid, function()
                     return vim.fn.winsaveview()
                 end),
@@ -139,7 +182,7 @@ function M.decorate(bufnr, session, status_rows)
 
     for _, winid in ipairs(vim.fn.win_findbuf(bufnr)) do
         if vim.api.nvim_win_is_valid(winid) and vim.api.nvim_win_get_buf(winid) == bufnr then
-            vim.wo[winid].winbar = M.winbar(session)
+            require('legate.ui.winbar').install(bufnr, session)
         end
     end
 end
@@ -154,19 +197,34 @@ function M.restore_window_states(bufnr, states)
             local state = states[winid]
 
             if state ~= nil then
-                if state.at_bottom and state.cursor_at_end then
+                if state.at_bottom and state.pin_to_bottom then
                     vim.api.nvim_win_set_cursor(winid, {
                         line_count,
                         0,
                     })
-                else
+                    vim.w[winid][PIN_BOTTOM_KEY] = true
+                elseif type(state.view) == 'table' then
                     vim.api.nvim_win_call(winid, function()
-                        vim.fn.winrestview(state.view)
+                        pcall(vim.fn.winrestview, state.view)
                     end)
+                    vim.w[winid][PIN_BOTTOM_KEY] = false
                 end
             end
         end
     end
+end
+
+---@param winid integer
+function M.mark_pinned_to_bottom(winid)
+    if vim.api.nvim_win_is_valid(winid) then
+        vim.w[winid][PIN_BOTTOM_KEY] = true
+    end
+end
+
+---@param winid integer
+---@return boolean
+function M.is_pinned_to_bottom(winid)
+    return vim.api.nvim_win_is_valid(winid) and vim.w[winid][PIN_BOTTOM_KEY] == true
 end
 
 ---@param bufnr integer

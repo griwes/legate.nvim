@@ -29,7 +29,7 @@ local function require_prompt_anchor(bufnr)
     local anchor = prompt_anchor(bufnr)
 
     if anchor == nil then
-        error('Prompt anchor is missing from the ACP chat buffer')
+        error('Prompt anchor is missing from the Legate chat buffer')
     end
 
     return anchor
@@ -111,7 +111,7 @@ function M.get_prompt(bufnr)
     local prompt = M.capture_prompt(bufnr)
 
     if prompt == nil then
-        error('Prompt anchor is missing from the ACP chat buffer')
+        error('Prompt anchor is missing from the Legate chat buffer')
     end
 
     return prompt
@@ -133,6 +133,21 @@ function M.set_prompt(bufnr, text)
     require('legate.ui.buffer').with_mutation(bufnr, function()
         vim.api.nvim_buf_set_lines(bufnr, anchor.row + 2, -1, false, replacement)
     end)
+
+    local prompt_cursor = M.prompt_end_cursor(bufnr)
+    local prompt_start = anchor.row + 3
+    local surface = require('legate.ui.surface')
+
+    for _, winid in ipairs(vim.fn.win_findbuf(bufnr)) do
+        if vim.api.nvim_win_is_valid(winid) and vim.api.nvim_win_get_buf(winid) == bufnr then
+            local cursor = vim.api.nvim_win_get_cursor(winid)
+
+            if cursor[1] >= prompt_start or surface.is_pinned_to_bottom(winid) then
+                vim.api.nvim_win_set_cursor(winid, prompt_cursor)
+                surface.mark_pinned_to_bottom(winid)
+            end
+        end
+    end
 end
 
 return M

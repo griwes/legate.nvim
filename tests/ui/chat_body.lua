@@ -208,14 +208,14 @@ it('keeps a blank line after transcript message headings', function()
     assert.are.equal('assistant reply', lines[assistant_heading + 2])
 end)
 
-it('names the ACP chat buffer with a parseable session locator', function()
+it('names the Legate chat buffer with a parseable session locator', function()
     local bufnr = api.open_chat()
     local current_session = api.current_session()
     local buffer = require('legate.ui.buffer')
     local name = vim.api.nvim_buf_get_name(bufnr)
     local locator = buffer.session_locator(bufnr)
 
-    assert.are.equal('acp://session/local/acp:1', name)
+    assert.are.equal('legate://session/local/acp:1', name)
     assert.are.same({
         local_id = current_session.id,
     }, locator)
@@ -225,7 +225,7 @@ it('names the ACP chat buffer with a parseable session locator', function()
     local next_name = vim.api.nvim_buf_get_name(bufnr)
     local next_locator = buffer.session_locator(bufnr)
 
-    assert.are.equal('acp://session/local/acp:2', next_name)
+    assert.are.equal('legate://session/local/acp:2', next_name)
     assert.are.same({
         local_id = next_session.id,
     }, next_locator)
@@ -234,7 +234,7 @@ it('names the ACP chat buffer with a parseable session locator', function()
     api.set_prompt('bind buffer name')
     api.submit_prompt()
 
-    assert.are.equal('acp://session/remote/sess_123', vim.api.nvim_buf_get_name(bufnr))
+    assert.are.equal('legate://session/remote/sess_123', vim.api.nvim_buf_get_name(bufnr))
     assert.are.same({
         remote_id = 'sess_123',
     }, buffer.session_locator(bufnr))
@@ -492,6 +492,48 @@ it('renders session status in the winbar and shows waiting state as virtual text
             details = true,
         })
     )
+end)
+
+it('renders ACP buffer winbars through Statuesque when it is available', function()
+    local original_statuesque = package.loaded.statuesque
+    local observed = {}
+
+    package.loaded.statuesque = {
+        replace_window_surface = function(opts)
+            observed.replacement = opts
+            vim.wo[0][opts.target] = opts.expression
+            return { vim.api.nvim_get_current_win() }
+        end,
+        compose = function(spec, opts)
+            observed.sigil = opts.sigil
+            observed.surface = opts.surface
+            return spec
+        end,
+        render = function(spec, target, opts)
+            observed.target = target
+            observed.winid = opts.winid
+            observed.spec = spec
+            return 'statuesque-legate-winbar'
+        end,
+    }
+
+    local bufnr = api.open_chat()
+    local rendered = require('legate.ui.winbar').render()
+
+    package.loaded.statuesque = original_statuesque
+
+    assert.are.equal("%!v:lua.require'legate.ui.winbar'.render()", vim.wo[0].winbar)
+    assert.are.equal('statuesque-legate-winbar', rendered)
+    assert.are.equal('legate', observed.replacement.owner)
+    assert.are.equal('winbar', observed.replacement.target)
+    assert.are.equal(bufnr, observed.replacement.bufnr)
+    assert.is_true(observed.replacement.all_windows)
+    assert.are.equal('󰚩', observed.sigil)
+    assert.are.equal('winbar', observed.surface)
+    assert.are.equal('winbar', observed.target)
+    assert.are.equal(vim.api.nvim_get_current_win(), observed.winid)
+    assert.are.equal(bufnr, vim.api.nvim_get_current_buf())
+    assert.are.equal('legate', observed.spec.left[1].role)
 end)
 
 it('keeps the chat pinned to the bottom while streamed updates arrive', function()

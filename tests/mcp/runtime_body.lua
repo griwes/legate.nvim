@@ -4246,15 +4246,15 @@ it('blocks config changes on another local session while a turn is still running
     assert.are.equal(3, #fake_client.sync_calls)
 end)
 
-it('rejects submitting a second prompt while a turn is still running', function()
+it('queues a second prompt while a turn is still running', function()
     api.open_chat()
     api.set_prompt('first prompt')
-    api.submit_prompt()
+    local session = api.submit_prompt()
     api.set_prompt('second prompt')
 
-    assert.has_error(function()
-        api.submit_prompt()
-    end)
+    api.submit_prompt()
+
+    assert.are.same({ 'second prompt' }, session.queued_prompts)
     assert.are.equal(1, #fake_client.async_calls)
 end)
 

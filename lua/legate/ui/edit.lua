@@ -152,7 +152,7 @@ function M.leave_prompt_edit(bufnr)
     vim.bo[bufnr].modifiable = false
 end
 
----Attach buffer-local prompt-edit behavior to the ACP chat buffer.
+---Attach buffer-local prompt-edit behavior to the Legate chat buffer.
 ---@param bufnr integer
 function M.attach(bufnr)
     if attached_buffers[bufnr] then

@@ -13,16 +13,16 @@ local state = {
 ---@return string
 local function session_buffer_name(session)
     if session.remote_id ~= nil and session.remote_id ~= '' then
-        return string.format('acp://session/remote/%s', session.remote_id)
+        return string.format('legate://session/remote/%s', session.remote_id)
     end
 
-    return string.format('acp://session/local/%s', session.id)
+    return string.format('legate://session/local/%s', session.id)
 end
 
 ---@param name string
 ---@return legate.BufferLocator?
 local function session_locator_from_name(name)
-    local prefix = 'acp://session/'
+    local prefix = 'legate://session/'
 
     if not vim.startswith(name, prefix) then
         return nil
@@ -82,12 +82,12 @@ end
 
 ---@return string
 local function pending_buffer_name()
-    return 'acp://session/pending'
+    return 'legate://session/pending'
 end
 
 ---@param name string
 ---@return boolean
-local function is_acp_buffer_name(name)
+local function is_legate_buffer_name(name)
     return name == config.get().chat_buffer_name or session_locator_from_name(name) ~= nil
 end
 
@@ -100,7 +100,7 @@ local function is_chat_buffer(bufnr)
 
     local name = vim.api.nvim_buf_get_name(bufnr)
 
-    if not is_acp_buffer_name(name) then
+    if not is_legate_buffer_name(name) then
         return false
     end
 
@@ -123,7 +123,13 @@ local function purge_stale_buffers(keep_bufnr)
         if bufnr ~= keep_bufnr and vim.api.nvim_buf_is_valid(bufnr) then
             local name = vim.api.nvim_buf_get_name(bufnr)
 
-            if is_acp_buffer_name(name) and not is_chat_buffer(bufnr) then
+            if is_legate_buffer_name(name) and not is_chat_buffer(bufnr) then
+                local ok, winbar = pcall(require, 'legate.ui.winbar')
+
+                if ok and type(winbar.clear) == 'function' then
+                    winbar.clear(bufnr)
+                end
+
                 pcall(vim.api.nvim_buf_delete, bufnr, {
                     force = true,
                 })
@@ -253,7 +259,7 @@ function M.get()
     return state.bufnr
 end
 
----Create or reuse the ACP chat buffer.
+---Create or reuse the Legate chat buffer.
 ---@return integer
 function M.ensure()
     local bufnr = M.get()
@@ -275,7 +281,7 @@ function M.ensure()
     return bufnr
 end
 
----Show the ACP chat buffer in the current window.
+---Show the Legate chat buffer in the current window.
 ---@return integer
 function M.open()
     local bufnr = M.ensure()
@@ -309,7 +315,7 @@ function M.reveal_in_placeholder(bufnr)
     return true
 end
 
----Forget buffer state and close the ACP chat buffer if it exists.
+---Forget buffer state and close the Legate chat buffer if it exists.
 function M.clear()
     local bufnr = M.get()
 
@@ -326,6 +332,12 @@ function M.clear()
 
         if ok and type(hover.clear) == 'function' then
             hover.clear(bufnr)
+        end
+
+        local ok, winbar = pcall(require, 'legate.ui.winbar')
+
+        if ok and type(winbar.clear) == 'function' then
+            winbar.clear(bufnr)
         end
 
         vim.api.nvim_buf_delete(bufnr, {
@@ -365,7 +377,7 @@ function M.mark_clean(bufnr)
         return
     end
 
-    if not is_acp_buffer_name(vim.api.nvim_buf_get_name(bufnr)) then
+    if not is_legate_buffer_name(vim.api.nvim_buf_get_name(bufnr)) then
         return
     end
 

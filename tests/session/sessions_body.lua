@@ -260,7 +260,7 @@ it('creates and reuses a single chat buffer', function()
     local buffer = require('legate.ui.buffer')
 
     assert.are.equal(first, second)
-    assert.are.equal('acp://session/local/acp:1', vim.api.nvim_buf_get_name(first))
+    assert.are.equal('legate://session/local/acp:1', vim.api.nvim_buf_get_name(first))
     assert.are.same({
         local_id = 'acp:1',
     }, buffer.session_locator(first))
@@ -1034,7 +1034,7 @@ it('restores persisted ACP sessions during setup when configured', function()
     assert.are.equal('restored on setup', api.current_session().draft_prompt)
 end)
 
-it('adopts mksession-restored ACP URI buffers during setup', function()
+it('adopts mksession-restored Legate URI buffers during setup', function()
     local state_file = temp_path('acp-restore-uri-buffer.json')
 
     plugin.setup({
@@ -1072,7 +1072,7 @@ it('adopts mksession-restored ACP URI buffers during setup', function()
     assert.is_true(table.concat(lines, '\n'):find('restored URI draft', 1, true) ~= nil)
 end)
 
-it('reveals hidden mksession-restored ACP URI buffers over empty placeholders during setup', function()
+it('reveals hidden mksession-restored Legate URI buffers over empty placeholders during setup', function()
     local state_file = temp_path('acp-restore-hidden-uri-buffer.json')
 
     plugin.setup({

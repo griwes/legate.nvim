@@ -124,12 +124,10 @@ function M.new(deps)
     ---@return boolean
     function helper.drain_queue(current_session, stop_reason)
         if stop_reason == 'cancelled' then
-            render_if_selected(current_session, current_session.draft_prompt or '')
             return false
         end
 
         if current_session.status == 'waiting' or deps.continuity.waiting() ~= nil then
-            render_if_selected(current_session, current_session.draft_prompt or '')
             return false
         end
 
@@ -147,7 +145,6 @@ function M.new(deps)
         end
 
         if prompt == nil then
-            render_if_selected(current_session, current_session.draft_prompt or '')
             return false
         end
 
@@ -249,6 +246,7 @@ function M.new(deps)
             vim.api.nvim_buf_line_count(bufnr),
             0,
         })
+        require('legate.ui.surface').mark_pinned_to_bottom(vim.api.nvim_get_current_win())
 
         local ok, edit = pcall(require, 'legate.ui.edit')
 
