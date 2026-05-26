@@ -529,10 +529,11 @@ it('completes queued approval options for every pending request', function()
     local definition = vim.api.nvim_get_commands({
         builtin = false,
     })['LegateSelectApprovalOption']
+    local pending = api.pending_approvals()
 
     assert.are.same({
-        'acp:1:approval_completion_first:1:allow-first',
-        'acp:1:approval_completion_second:1:allow-second',
+        string.format('%s:allow-first', pending[1].request_id),
+        string.format('%s:allow-second', pending[2].request_id),
     }, definition.complete('', 'LegateSelectApprovalOption ', 0))
 end)
 

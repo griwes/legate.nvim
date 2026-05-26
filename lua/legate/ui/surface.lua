@@ -153,8 +153,7 @@ function M.decorate(bufnr, session, status_rows)
     vim.api.nvim_buf_clear_namespace(bufnr, namespace, 0, -1)
 
     if session.status == 'waiting' then
-        local prompt_header_line = require('legate.ui.input').prompt_header_line(bufnr)
-        local waiting_row = math.max(prompt_header_line - 4, 0)
+        local waiting_row = math.max(vim.api.nvim_buf_line_count(bufnr) - 1, 0)
         local waiting_text = 'Working...'
 
         local pending_approval = require('legate.session').pending_approval(session)

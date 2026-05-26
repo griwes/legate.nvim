@@ -158,8 +158,7 @@ function M.apply(bufnr, current_session, pending_approvals)
     end
 
     local active_pending = pending_approvals[1]
-    local prompt_header_line = require('legate.ui.input').prompt_header_line(bufnr)
-    local anchor_row = math.max(prompt_header_line - 3, 0)
+    local anchor_row = math.max(vim.api.nvim_buf_line_count(bufnr) - 1, 0)
     local virt_lines =
         require('legate.status_message').pending_approval_virtual_lines(current_session, pending_approvals)
 

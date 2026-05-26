@@ -328,8 +328,8 @@ local function ensure_client(current_session)
         on_notification = function(method, params)
             generation_router:dispatch_notification(generation, method, params)
         end,
-        on_request = function(method, params, respond)
-            generation_router:dispatch_request(generation, method, params, respond)
+        on_request = function(method, params, respond, control)
+            generation_router:dispatch_request(generation, method, params, respond, control)
         end,
     })
 

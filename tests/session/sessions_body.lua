@@ -336,7 +336,7 @@ it('closes the current local ACP session and rerenders the next selected session
     assert.are.equal(second.id, api.current_session().id)
     assert.are.equal('second draft', api.get_prompt())
     assert.are.equal(string.format('ACP  %s  adapter=codex  idle  sync=unbound', second.id), vim.wo[0].winbar)
-    assert.is_true(vim.tbl_contains(lines, '## Prompt'))
+    assert.is_false(vim.tbl_contains(lines, '## Prompt'))
 end)
 
 it('rejects closing a waiting ACP session', function()
@@ -375,7 +375,7 @@ it('recreates a fresh current session when closing the last session with auto-cr
     assert.are.equal('acp:2', api.current_session().id)
     assert.are.equal('', api.get_prompt())
     assert.are.equal('ACP  acp:2  adapter=custom  idle  sync=unbound', vim.wo[0].winbar)
-    assert.is_true(vim.tbl_contains(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), '## Prompt'))
+    assert.is_false(vim.tbl_contains(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), '## Prompt'))
 end)
 
 it('invokes vim.ui.select for ACP session picking', function()
@@ -1068,8 +1068,9 @@ it('adopts mksession-restored Legate URI buffers during setup', function()
     assert.is_false(vim.bo[restored_bufnr].modified)
     assert.are.equal(current_id, api.current_session().id)
 
+    assert.are.equal('restored URI draft', api.get_prompt())
     local lines = vim.api.nvim_buf_get_lines(restored_bufnr, 0, -1, false)
-    assert.is_true(table.concat(lines, '\n'):find('restored URI draft', 1, true) ~= nil)
+    assert.is_false(table.concat(lines, '\n'):find('restored URI draft', 1, true) ~= nil)
 end)
 
 it('reveals hidden mksession-restored Legate URI buffers over empty placeholders during setup', function()
@@ -1104,8 +1105,9 @@ it('reveals hidden mksession-restored Legate URI buffers over empty placeholders
     assert.is_false(vim.bo[restored_bufnr].buflisted)
     assert.is_false(vim.bo[restored_bufnr].modified)
 
+    assert.are.equal('restored hidden URI draft', api.get_prompt())
     local lines = vim.api.nvim_buf_get_lines(restored_bufnr, 0, -1, false)
-    assert.is_true(table.concat(lines, '\n'):find('restored hidden URI draft', 1, true) ~= nil)
+    assert.is_false(table.concat(lines, '\n'):find('restored hidden URI draft', 1, true) ~= nil)
 end)
 
 it('restores sessions with open_chat=true and auto_create_session when no state exists', function()
@@ -1221,7 +1223,7 @@ it('continues the newest persisted ACP session when memory has no sessions', fun
     assert.are.equal('latest persisted', api.get_prompt())
 end)
 
-it('continues the pre-existing newest ACP session without clobbering its draft from the visible buffer', function()
+it('continues a visible ACP session after native split draft edits update its session state', function()
     local sessions = require('legate.session')
 
     sessions.restore({
@@ -1252,9 +1254,9 @@ it('continues the pre-existing newest ACP session without clobbering its draft f
 
     local continued = api.continue_last_session()
 
-    assert.are.equal('acp:2', continued.id)
-    assert.are.equal('acp:2', api.current_session().id)
-    assert.are.equal('newer preserved draft', api.get_prompt())
+    assert.are.equal('acp:1', continued.id)
+    assert.are.equal('acp:1', api.current_session().id)
+    assert.are.equal('old visible buffer draft', api.get_prompt())
     assert.are.equal('old visible buffer draft', sessions.get('acp:1').draft_prompt)
     assert.are.equal('newer preserved draft', sessions.get('acp:2').draft_prompt)
 end)

@@ -5,9 +5,10 @@ vim.opt.runtimepath:prepend(vim.fn.getcwd())
 
 local mcp_nvim_path = vim.env.MCP_NVIM_PATH
 if not mcp_nvim_path or mcp_nvim_path == '' then
-    mcp_nvim_path = vim.fn.fnamemodify(vim.fn.getcwd() .. '/../ministry.nvim', ':p')
+    error('MCP_NVIM_PATH must point to a ministry.nvim checkout')
 end
 
+mcp_nvim_path = vim.fs.normalize(mcp_nvim_path)
 if vim.fn.isdirectory(mcp_nvim_path) == 0 then
     error(
         string.format(
@@ -17,7 +18,7 @@ if vim.fn.isdirectory(mcp_nvim_path) == 0 then
     )
 end
 
-vim.opt.runtimepath:prepend(vim.fn.fnamemodify(mcp_nvim_path, ':p'))
+vim.opt.runtimepath:prepend(mcp_nvim_path)
 
 local lazypath = vim.fn.stdpath('data') .. '/lazy/lazy.nvim'
 

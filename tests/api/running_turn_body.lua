@@ -4,20 +4,46 @@ local function submit_direct(prompt)
 end
 
 it('queues submitted prompts while a turn is running', function()
-    local bufnr = api.open_chat()
+    api.open_chat()
 
     submit_direct('first turn')
     api.set_prompt('queued turn')
     api.submit_prompt_async()
 
     local session = api.current_session()
-    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    local queue_bufnr = require('legate.ui.input').queue_buffer()
+    local lines = vim.api.nvim_buf_get_lines(queue_bufnr, 0, -1, false)
 
     assert.are.equal('waiting', session.status)
     assert.are.same({ 'queued turn' }, session.queued_prompts)
     assert.are.equal(1, #fake_client.async_calls)
-    assert.is_true(vim.tbl_contains(lines, '## Queue'))
-    assert.is_true(vim.tbl_contains(lines, '1. queued turn'))
+    assert.are.same({ '- queued turn' }, lines)
+end)
+
+it('updates queued prompts from the native queue split on write', function()
+    api.open_chat()
+
+    submit_direct('first turn')
+    api.set_prompt('queued turn')
+    api.submit_prompt_async()
+
+    local input = require('legate.ui.input')
+    local queue_bufnr = input.queue_buffer()
+
+    assert.is_not_nil(queue_bufnr)
+
+    vim.api.nvim_buf_set_lines(queue_bufnr, 0, -1, false, {
+        '- edited queued turn',
+        '- second queued turn',
+    })
+    vim.api.nvim_buf_call(queue_bufnr, function()
+        vim.cmd.write()
+    end)
+
+    assert.are.same({
+        'edited queued turn',
+        'second queued turn',
+    }, api.current_session().queued_prompts)
 end)
 
 it('drains one queued prompt after a normal turn finish', function()
@@ -39,6 +65,35 @@ it('drains one queued prompt after a normal turn finish', function()
     assert.are.equal('queued turn', session.pending_prompt)
     assert.are.same({}, session.queued_prompts)
     assert.are.equal('session/prompt', fake_client.async_calls[#fake_client.async_calls].method)
+end)
+
+it('schedules queued prompt draining out of fast event callbacks', function()
+    submit_direct('first turn')
+    api.set_prompt('queued turn')
+    api.submit_prompt_async()
+
+    local scheduled, restore = with_fast_event_schedule()
+
+    fake_client:resolve({
+        stopReason = 'end_turn',
+    })
+
+    restore()
+
+    assert.are.equal('idle', api.current_session().status)
+    assert.are.same({ 'queued turn' }, api.current_session().queued_prompts)
+    assert.is_true(#scheduled >= 1)
+
+    for _, callback in ipairs(scheduled) do
+        callback()
+    end
+
+    wait_until(function()
+        return api.current_session().pending_prompt == 'queued turn'
+    end)
+
+    assert.are.equal('waiting', api.current_session().status)
+    assert.are.same({}, api.current_session().queued_prompts)
 end)
 
 it('keeps queued prompts after a cancelled turn', function()
@@ -126,6 +181,24 @@ it('interrupts the active turn through the command surface', function()
 
     assert.are.equal('session/cancel', fake_client.notifications[1].method)
     assert.are.equal('cancelled', api.current_session().status)
+end)
+
+it('submits LegateQueue immediately when it is the user turn', function()
+    api.open_chat()
+    api.set_prompt('submit from queue command')
+
+    vim.cmd('LegateQueue')
+
+    wait_until(function()
+        return fake_client.async_calls[1] ~= nil
+    end)
+
+    local session = api.current_session()
+
+    assert.are.equal('waiting', session.status)
+    assert.are.equal('submit from queue command', session.pending_prompt)
+    assert.are.same({}, session.queued_prompts)
+    assert.are.equal('session/prompt', fake_client.async_calls[1].method)
 end)
 
 it('persists queued prompts with local session state', function()

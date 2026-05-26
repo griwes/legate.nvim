@@ -2,7 +2,6 @@ local buffer = require('legate.ui.buffer')
 local config = require('legate.config')
 local approval_ui = require('legate.ui.approval')
 local hover = require('legate.ui.hover')
-local input = require('legate.ui.input')
 local status_message = require('legate.status_message')
 local surface = require('legate.ui.surface')
 
@@ -126,47 +125,6 @@ function M.approval_summary_line(approval, current_session)
     return status_message.approval_summary_line(approval, related_tool)
 end
 
----@param prompt string?
----@return string[]
-local function prompt_lines(prompt)
-    if prompt == nil or prompt == '' then
-        return { '' }
-    end
-
-    return vim.split(prompt, '\n', {
-        plain = true,
-    })
-end
-
----@param prompt string
----@return string
-local function prompt_preview(prompt)
-    local normalized = vim.trim(prompt:gsub('[\r\t\n]+', ' '))
-
-    if #normalized <= 120 then
-        return normalized
-    end
-
-    return normalized:sub(1, 117) .. '...'
-end
-
----@param prompts string[]
----@return string[]
-local function format_queue(prompts)
-    local lines = {
-        '## Queue',
-        '',
-    }
-
-    for index, prompt in ipairs(prompts) do
-        table.insert(lines, string.format('%d. %s', index, prompt_preview(prompt)))
-    end
-
-    table.insert(lines, '')
-
-    return lines
-end
-
 ---@class legate.RenderStatusRow
 ---@field row integer
 ---@field message_id integer
@@ -180,7 +138,6 @@ end
 ---@param prompt string?
 ---@return legate.RenderLayout
 local function build_layout(current_session, prompt)
-    local prompt_body = prompt_lines(prompt)
     ---@type legate.RenderLayout
     local layout = {
         lines = {
@@ -251,24 +208,6 @@ local function build_layout(current_session, prompt)
         end
     end
 
-    if #(current_session.queued_prompts or {}) > 0 then
-        table.insert(lines, '')
-
-        for _, line in ipairs(format_queue(current_session.queued_prompts)) do
-            table.insert(lines, line)
-        end
-    end
-
-    table.insert(lines, '')
-    table.insert(lines, '---')
-    table.insert(lines, '')
-    table.insert(lines, config.get().prompt_header)
-    table.insert(lines, '')
-
-    for _, line in ipairs(prompt_body) do
-        table.insert(lines, line)
-    end
-
     return layout
 end
 
@@ -325,10 +264,8 @@ function M.render(session, prompt)
     end
 
     local window_states = surface.capture_window_states(bufnr)
-    local prompt_body = prompt_lines(prompt)
     local layout = build_layout(session, prompt)
     local lines = layout.lines
-    local prompt_header_row = #lines - #prompt_body - 2
 
     local function buffer_is_valid()
         return vim.api.nvim_buf_is_valid(bufnr)
@@ -342,10 +279,6 @@ function M.render(session, prompt)
     buffer.with_mutation(bufnr, function()
         replace_changed_range(bufnr, lines)
     end)
-
-    if buffer_is_valid() then
-        input.set_anchor(bufnr, prompt_header_row)
-    end
 
     if buffer_is_valid() then
         hover.set_status_rows(bufnr, layout.status_rows)

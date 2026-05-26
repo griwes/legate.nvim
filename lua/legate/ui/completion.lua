@@ -50,6 +50,10 @@ local function slash_start_column(bufnr)
         return -3, nil
     end
 
+    if vim.b[bufnr].legate_surface_role ~= 'input' then
+        return -3, nil
+    end
+
     local cursor = vim.api.nvim_win_get_cursor(0)
     local ok, prompt_start_line = pcall(input.prompt_start_line, bufnr)
 

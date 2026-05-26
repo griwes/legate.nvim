@@ -3,7 +3,7 @@ local methods = require('legate.core.methods')
 
 ---@class legate.RequestHandlerDescriptor
 ---@field requires_active_session boolean
----@field handle fun(ctx: legate.TransportContext, params: table, respond: fun(result?: any, error?: table), current_session?: legate.Session, generation?: integer)
+---@field handle fun(ctx: legate.TransportContext, params: table, respond: fun(result?: any, error?: table), current_session?: legate.Session, generation?: integer, control?: legate.RpcInboundRequestControl)
 
 ---@class legate.TransportRouter
 ---@field ctx legate.TransportContext
@@ -35,7 +35,8 @@ end
 ---@param method string
 ---@param params table
 ---@param respond fun(result?: any, error?: table)
-function M:dispatch_request(generation, method, params, respond)
+---@param control? legate.RpcInboundRequestControl
+function M:dispatch_request(generation, method, params, respond, control)
     if not self.ctx.is_live_generation(generation) then
         if method == methods.SESSION_REQUEST_PERMISSION then
             respond(self.ctx.cancelled_response())
@@ -60,7 +61,7 @@ function M:dispatch_request(generation, method, params, respond)
             end
         end
 
-        handler.handle(self.ctx, params, respond, current_session, generation)
+        handler.handle(self.ctx, params, respond, current_session, generation, control)
         return
     end
 
@@ -80,7 +81,7 @@ function M:dispatch_request(generation, method, params, respond)
         local extension_handler = handlers.extension_request_handler(method)
 
         if extension_handler ~= nil then
-            extension_handler(self.ctx, params, respond)
+            extension_handler(self.ctx, params, respond, control)
             return
         end
     end

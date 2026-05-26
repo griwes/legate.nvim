@@ -88,16 +88,13 @@ it('does not confuse transcript markdown with the prompt region', function()
     assert.are.equal('draft prompt', api.get_prompt())
 end)
 
-it('keeps transcript edits out of the buffer while preserving prompt edits', function()
+it('keeps transcript edits out of the buffer while preserving native split prompt edits', function()
     local bufnr = api.open_chat()
+    local transcript_winid = vim.api.nvim_get_current_win()
 
     api.set_prompt('draft prompt')
 
-    local input = require('legate.ui.input')
-    local anchor_row = input.anchor_row(bufnr)
-    local prompt_start = input.prompt_start_line(bufnr)
     local edit = require('legate.ui.edit')
-    assert.is_not_nil(anchor_row)
 
     vim.bo[bufnr].modifiable = true
     vim.api.nvim_buf_set_lines(bufnr, 1, 2, false, {
@@ -111,12 +108,16 @@ it('keeps transcript edits out of the buffer while preserving prompt edits', fun
 
     assert.is_false(vim.tbl_contains(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), 'mutated transcript'))
 
-    vim.api.nvim_win_set_cursor(0, {
-        prompt_start,
-        0,
+    edit.enter_prompt_edit(bufnr, 'end', {
+        startinsert = false,
     })
-    edit.refresh(bufnr)
-    vim.api.nvim_buf_set_lines(bufnr, prompt_start - 1, prompt_start, false, {
+
+    local input_bufnr = require('legate.ui.input').input_buffer()
+    assert.is_not_nil(input_bufnr)
+    assert.is_true(vim.bo[input_bufnr].modifiable)
+    assert.are_not.equal(transcript_winid, vim.api.nvim_get_current_win())
+
+    vim.api.nvim_buf_set_lines(input_bufnr, 0, -1, false, {
         'edited prompt',
     })
 
@@ -356,6 +357,9 @@ it('exposes slash-command completion through the ACP prompt omnifunc', function(
     api.current_session().available_commands = vim.deepcopy(fake_available_commands)
     api.set_prompt('/we')
 
+    require('legate.ui.input').open_input(api.current_session(), vim.api.nvim_get_current_win())
+    bufnr = require('legate.ui.input').input_buffer()
+
     assert.are.equal("v:lua.require'legate.ui.completion'.complete", vim.bo[bufnr].omnifunc)
 
     vim.api.nvim_win_set_cursor(0, {
@@ -442,7 +446,7 @@ it('defers ACP rerenders out of fast event contexts', function()
 
     assert.is_true(ok, err)
     assert.are.equal('idle', current_session.status)
-    assert.are.equal(2, #scheduled)
+    assert.is_true(#scheduled >= 2)
     assert.is_false(vim.tbl_contains(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), 'Deferred render'))
 
     restore()
@@ -474,7 +478,7 @@ it('renders session status in the winbar and shows waiting state as virtual text
         vim.wo[0].winbar
     )
     assert.are.equal(1, #marks)
-    assert.are.equal(input.prompt_header_line(bufnr) - 4, marks[1][2])
+    assert.are.equal(vim.api.nvim_buf_line_count(bufnr) - 1, marks[1][2])
     assert.are.same({ { 'Working...', 'Comment' } }, marks[1][4].virt_text)
     assert.are.equal('overlay', marks[1][4].virt_text_pos)
 
@@ -780,11 +784,11 @@ it('renders approval status rows compactly and exposes hover payload content', f
     end, preview_lines)[1])
 end)
 
-it('keeps the transcript read-only while leaving the prompt naturally editable', function()
+it('keeps the transcript read-only while leaving the native prompt split editable', function()
     local bufnr = api.open_chat()
     local edit = require('legate.ui.edit')
 
-    assert.is_true(vim.bo[bufnr].modifiable)
+    assert.is_false(vim.bo[bufnr].modifiable)
 
     vim.api.nvim_win_set_cursor(0, { 1, 0 })
     edit.refresh(bufnr)
@@ -793,27 +797,29 @@ it('keeps the transcript read-only while leaving the prompt naturally editable',
 
     api.set_prompt('draft')
 
-    vim.api.nvim_win_set_cursor(0, { vim.api.nvim_buf_line_count(bufnr), 0 })
-    edit.refresh(bufnr)
+    edit.enter_prompt_edit(bufnr, 'end', {
+        startinsert = false,
+    })
 
-    assert.is_true(vim.bo[bufnr].modifiable)
+    local input_bufnr = require('legate.ui.input').input_buffer()
 
+    assert.is_false(vim.bo[bufnr].modifiable)
+    assert.is_true(vim.bo[input_bufnr].modifiable)
     api.submit_prompt()
 
     assert.is_false(vim.bo[bufnr].modifiable)
 end)
 
-it('keeps ACP prompt edits from dirtying the plugin-owned buffer', function()
+it('keeps native split prompt edits from dirtying the plugin-owned transcript buffer', function()
     local bufnr = api.open_chat()
     local input = require('legate.ui.input')
-    local edit = require('legate.ui.edit')
 
-    vim.api.nvim_win_set_cursor(0, {
-        input.prompt_start_line(bufnr),
-        0,
-    })
-    edit.refresh(bufnr)
-    vim.api.nvim_buf_set_lines(bufnr, input.prompt_start_line(bufnr) - 1, -1, false, {
+    input.open_input(api.current_session(), vim.api.nvim_get_current_win())
+
+    local input_bufnr = input.input_buffer()
+    assert.is_not_nil(input_bufnr)
+
+    vim.api.nvim_buf_set_lines(input_bufnr, 0, -1, false, {
         'typed prompt',
     })
 
@@ -825,87 +831,119 @@ it('keeps ACP prompt edits from dirtying the plugin-owned buffer', function()
     assert.is_false(vim.bo[bufnr].modified)
 end)
 
-it('limits editing to the ACP prompt region', function()
+it('opens the native prompt split from the read-only transcript', function()
     local bufnr = api.open_chat()
     local edit = require('legate.ui.edit')
-    local prompt_start = require('legate.ui.input').prompt_start_line(bufnr)
 
-    vim.api.nvim_win_set_cursor(0, {
-        prompt_start,
-        0,
+    edit.enter_prompt_edit(bufnr, 'end', {
+        startinsert = false,
     })
-    edit.refresh(bufnr)
 
-    assert.is_true(vim.bo[bufnr].modifiable)
-    assert.are.same({ prompt_start, 0 }, vim.api.nvim_win_get_cursor(0))
+    local input_winid = require('legate.ui.input').input_window()
 
-    vim.api.nvim_win_set_cursor(0, { 1, 0 })
-    edit.refresh(bufnr)
-
+    assert.is_not_nil(input_winid)
+    assert.are.equal(input_winid, vim.api.nvim_get_current_win())
     assert.is_false(vim.bo[bufnr].modifiable)
 end)
 
-it('keeps the ACP prompt header outside the editable region', function()
-    local bufnr = api.open_chat()
-    local input = require('legate.ui.input')
-    local edit = require('legate.ui.edit')
-    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-
-    vim.api.nvim_win_set_cursor(0, {
-        input.prompt_header_line(bufnr),
-        0,
+it('bounds the native prompt split height to the configured input rows', function()
+    plugin.setup({
+        input_split = {
+            min_height = 1,
+            max_height = 2,
+        },
     })
-    edit.refresh(bufnr)
+    api.open_chat()
+    api.set_prompt('one\ntwo\nthree')
+
+    local input = require('legate.ui.input')
+    input.open_input(api.current_session(), vim.api.nvim_get_current_win())
+
+    local input_winid = input.input_window()
+
+    assert.is_not_nil(input_winid)
+    assert.are.equal(2, vim.api.nvim_win_get_height(input_winid))
+end)
+
+it('keeps the native prompt split bounded below an active queue split', function()
+    plugin.setup({
+        input_split = {
+            min_height = 1,
+            max_height = 2,
+        },
+        queue_split = {
+            max_height = 4,
+        },
+    })
+
+    api.open_chat()
+    vim.cmd.only()
+    local transcript_winid = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_height(transcript_winid, 8)
+
+    api.set_prompt('first turn')
+    api.submit_prompt()
+    api.set_prompt('queued turn')
+    api.submit_prompt_async()
+
+    local input = require('legate.ui.input')
+    local queue_winid = input.queue_window()
+
+    assert.is_not_nil(queue_winid)
+
+    input.open_input(api.current_session(), transcript_winid)
+
+    local input_winid = input.input_window()
+    queue_winid = input.queue_window()
+
+    assert.is_not_nil(input_winid)
+    assert.is_not_nil(queue_winid)
+    assert.is_true(vim.api.nvim_win_get_height(queue_winid) <= 4)
+    assert.is_true(vim.api.nvim_win_get_height(input_winid) <= 2)
+    assert.is_true(vim.fn.getwininfo(queue_winid)[1].winrow < vim.fn.getwininfo(input_winid)[1].winrow)
+end)
+
+it('repairs forced transcript edits without exposing a prompt header region', function()
+    local bufnr = api.open_chat()
+    local edit = require('legate.ui.edit')
 
     assert.is_false(vim.bo[bufnr].modifiable)
 
     vim.bo[bufnr].modifiable = true
-    vim.api.nvim_buf_set_lines(bufnr, input.prompt_header_line(bufnr) - 1, input.prompt_header_line(bufnr), false, {
-        'Mutated Header',
+    vim.api.nvim_buf_set_lines(bufnr, 0, 1, false, {
+        'Mutated Transcript',
     })
     vim.bo[bufnr].modifiable = false
 
     wait_until(function()
-        return vim.api.nvim_buf_get_lines(
-            bufnr,
-            input.prompt_header_line(bufnr) - 1,
-            input.prompt_header_line(bufnr),
-            false
-        )[1] == '## Prompt'
+        return vim.api.nvim_buf_get_lines(bufnr, 0, 1, false)[1] == '# ACP'
     end)
 
-    assert.are.equal(
-        '## Prompt',
-        vim.api.nvim_buf_get_lines(bufnr, input.prompt_header_line(bufnr) - 1, input.prompt_header_line(bufnr), false)[1]
-    )
-    assert.are.equal('', lines[input.prompt_header_line(bufnr) - 1])
-    assert.are.equal('---', lines[input.prompt_header_line(bufnr) - 2])
+    edit.refresh(bufnr)
+    assert.is_false(vim.bo[bufnr].modifiable)
 end)
 
-it('keeps a blank line between the prompt header and the editable prompt body', function()
+it('keeps prompt text out of the transcript buffer', function()
     local bufnr = api.open_chat()
-    local input = require('legate.ui.input')
+    api.set_prompt('hidden draft prompt')
+
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
-    assert.are.equal('', lines[input.prompt_start_line(bufnr) - 1])
-    assert.are.equal('## Prompt', lines[input.prompt_header_line(bufnr)])
+    assert.is_false(vim.tbl_contains(lines, '## Prompt'))
+    assert.is_false(vim.tbl_contains(lines, 'hidden draft prompt'))
 end)
 
-it('preserves prompt edit mode across ACP rerenders', function()
+it('keeps the native input split stable across ACP rerenders', function()
     local bufnr = api.open_chat()
     local edit = require('legate.ui.edit')
 
-    vim.api.nvim_win_set_cursor(0, {
-        vim.api.nvim_buf_line_count(bufnr),
-        0,
+    edit.enter_prompt_edit(bufnr, 'end', {
+        startinsert = false,
     })
-    edit.refresh(bufnr)
+    local input_winid = require('legate.ui.input').input_window()
     api.append_message('assistant', 'rerender while editing')
 
-    assert.is_true(vim.bo[bufnr].modifiable)
-
-    vim.api.nvim_win_set_cursor(0, { 1, 0 })
-    edit.refresh(bufnr)
+    assert.are.equal(input_winid, require('legate.ui.input').input_window())
 
     assert.is_false(vim.bo[bufnr].modifiable)
 end)

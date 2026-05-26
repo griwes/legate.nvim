@@ -15,6 +15,7 @@ function M.new(deps)
 
         if deps.buffer.get() ~= nil and selected_session ~= nil and selected_session.id == current_session.id then
             deps.render.render(current_session, prompt)
+            require('legate.ui.input').refresh(current_session, deps.buffer.visible_window())
         end
     end
 
@@ -25,6 +26,7 @@ function M.new(deps)
         local current_session = deps.continuity.create(deps.config.default_adapter_name())
 
         deps.render.render(current_session, current_session.draft_prompt)
+        require('legate.ui.input').refresh(current_session, deps.buffer.visible_window())
 
         return current_session
     end
@@ -136,6 +138,7 @@ function M.new(deps)
             return {}
         end
 
+        require('legate.ui.input').clear()
         local restored = deps.continuity.restore(persisted)
         local current_session = deps.continuity.current()
         local should_open = opts ~= nil and opts.open_chat or false
@@ -146,6 +149,7 @@ function M.new(deps)
                 deps.open_chat()
             elseif has_buffer then
                 deps.render.render(current_session, current_session.draft_prompt)
+                require('legate.ui.input').refresh(current_session, deps.buffer.visible_window())
                 deps.buffer.reveal_in_placeholder(deps.buffer.get())
             end
 
@@ -189,6 +193,7 @@ function M.new(deps)
 
         target = deps.continuity.select(target.id)
         deps.render.render(target, target.draft_prompt)
+        require('legate.ui.input').refresh(target, deps.buffer.visible_window())
         deps.open_chat()
 
         return target
@@ -261,6 +266,7 @@ function M.new(deps)
         local current_session = deps.continuity.select(session_id)
 
         deps.render.render(current_session, current_session.draft_prompt)
+        require('legate.ui.input').refresh(current_session, deps.buffer.visible_window())
 
         return current_session
     end
@@ -347,6 +353,7 @@ function M.new(deps)
 
             if had_buffer and next_session ~= nil then
                 deps.render.render(next_session, next_session.draft_prompt)
+                require('legate.ui.input').refresh(next_session, deps.buffer.visible_window())
             elseif had_buffer then
                 deps.buffer.clear()
             end

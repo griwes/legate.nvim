@@ -4,6 +4,19 @@ local buffer = require('legate.ui.buffer')
 local M = {}
 
 local REQUEST_ERROR_CODE = -32000
+local write_guard_group = vim.api.nvim_create_augroup('legate-acp-fs-write-guard', {
+    clear = true,
+})
+
+---@class legate.FileWriteAuthorization
+---@field canonical_target string
+---@field canonical_roots string[]
+---@field allow_outside_roots boolean
+
+---@type table<integer, legate.FileWriteAuthorization>
+local write_authorizations = {}
+---@type table<integer, boolean>
+local guarded_buffers = {}
 
 ---@class legate.FileSnapshot
 ---@field lines string[]
@@ -79,6 +92,11 @@ local function is_within_root(path, root)
     local normalized_path = path:gsub('\\', '/')
     local normalized_root = root:gsub('\\', '/')
 
+    if vim.fn.has('win32') == 1 then
+        normalized_path = normalized_path:lower()
+        normalized_root = normalized_root:lower()
+    end
+
     if normalized_path ~= '/' then
         normalized_path = normalized_path:gsub('/+$', '')
     end
@@ -91,9 +109,149 @@ local function is_within_root(path, root)
 end
 
 ---@param path string
+---@return boolean
+local function is_foreign_windows_path(path)
+    if vim.fn.has('win32') == 1 then
+        return false
+    end
+
+    return path:match('^%a:[/\\]') ~= nil or path:sub(1, 2) == '\\\\'
+end
+
+---@param left string
+---@param right string
+---@return boolean
+local function paths_equal(left, right)
+    if vim.fn.has('win32') == 1 then
+        return left:lower() == right:lower()
+    end
+
+    return left == right
+end
+
+---@param path string
+---@return string?, string?
+local function canonical_existing_path(path)
+    local resolved = vim.uv.fs_realpath(path)
+
+    if resolved ~= nil then
+        return normalize_path(resolved), nil
+    end
+
+    if vim.uv.fs_lstat(path) ~= nil then
+        return nil, string.format('ACP file path contains an unresolved symbolic link: %s', path)
+    end
+
+    return nil, nil
+end
+
+---@param path string
+---@return string?, string?
+local function canonical_missing_path(path)
+    local candidate = path
+    local suffix = {}
+
+    while candidate ~= nil and candidate ~= '' do
+        local resolved, resolution_error = canonical_existing_path(candidate)
+
+        if resolution_error ~= nil then
+            return nil, resolution_error
+        end
+
+        if resolved ~= nil then
+            for index = #suffix, 1, -1 do
+                resolved = vim.fs.joinpath(resolved, suffix[index])
+            end
+
+            return normalize_path(resolved), nil
+        end
+
+        table.insert(suffix, vim.fs.basename(candidate))
+        local next_candidate = vim.fs.dirname(candidate)
+
+        if next_candidate == candidate then
+            break
+        end
+
+        candidate = next_candidate
+    end
+
+    return nil, string.format('ACP file path has no existing parent: %s', path)
+end
+
+---@param path string
+---@return string?, string?
+local function canonical_path(path)
+    local canonical, canonical_error = canonical_existing_path(path)
+
+    if canonical ~= nil or canonical_error ~= nil then
+        return canonical, canonical_error
+    end
+
+    return canonical_missing_path(path)
+end
+
+---@param cwd? string
+---@return string[], string?
+local function canonical_allowed_roots(cwd)
+    local roots = {}
+    local seen = {}
+    local first_error = nil
+
+    for _, root in ipairs(allowed_roots(cwd)) do
+        if is_foreign_windows_path(root) then
+            first_error = first_error
+                or string.format('Windows ACP file paths are unsupported on this platform: %s', root)
+        else
+            local canonical_root, canonical_error = canonical_path(root)
+
+            if canonical_root ~= nil and not seen[canonical_root] then
+                seen[canonical_root] = true
+                table.insert(roots, canonical_root)
+            else
+                first_error = first_error or canonical_error
+            end
+        end
+    end
+
+    return roots, first_error
+end
+
+---@param path string
+---@param cwd? string
+---@return legate.FileWriteAuthorization?, string?
+local function canonical_authorization(path, cwd)
+    local canonical_target, target_error = canonical_path(path)
+
+    if canonical_target == nil then
+        return nil, target_error
+    end
+
+    local canonical_roots, roots_error = canonical_allowed_roots(cwd)
+
+    for _, root in ipairs(canonical_roots) do
+        if is_within_root(canonical_target, root) then
+            return {
+                canonical_target = canonical_target,
+                canonical_roots = canonical_roots,
+                allow_outside_roots = false,
+            },
+                nil
+        end
+    end
+
+    if #canonical_roots == 0 and roots_error ~= nil then
+        return nil, roots_error
+    end
+
+    return nil,
+        string.format('ACP file path resolves outside an allowed workspace root through a symbolic link: %s', path)
+end
+
+---@param path string
 ---@param cwd? string
 ---@param opts? { allow_loaded_buffer_read: boolean, allow_loaded_buffer_write: boolean }
----@return string?, table?
+---@return string?, table?, legate.FileWriteAuthorization?
 local function validate_absolute_path(path, cwd, opts)
     if not is_absolute_path(path) then
         return nil, request_error(string.format('ACP file path must be absolute: %s', path))
@@ -101,21 +259,128 @@ local function validate_absolute_path(path, cwd, opts)
 
     local normalized_path = normalize_path(path)
 
+    if is_foreign_windows_path(normalized_path) then
+        return nil,
+            request_error(string.format('Windows ACP file paths are unsupported on this platform: %s', path)),
+            nil
+    end
+
+    local lexically_allowed = false
+
     for _, root in ipairs(allowed_roots(cwd)) do
         if is_within_root(normalized_path, root) then
-            return normalized_path, nil
+            lexically_allowed = true
+            break
         end
+    end
+
+    if lexically_allowed then
+        local authorization, authorization_error = canonical_authorization(normalized_path, cwd)
+
+        if authorization ~= nil then
+            return normalized_path, nil, authorization
+        end
+
+        return nil, request_error(authorization_error), nil
     end
 
     if opts ~= nil then
         local allow_loaded_buffer = opts.allow_loaded_buffer_read == true or opts.allow_loaded_buffer_write == true
 
         if allow_loaded_buffer and find_loaded_buffer(normalized_path) ~= nil then
-            return normalized_path, nil
+            local canonical_target, canonical_error = canonical_path(normalized_path)
+
+            if canonical_target == nil then
+                return nil, request_error(canonical_error), nil
+            end
+
+            return normalized_path,
+                nil,
+                {
+                    canonical_target = canonical_target,
+                    canonical_roots = {},
+                    allow_outside_roots = true,
+                }
         end
     end
 
-    return nil, request_error(string.format('ACP file path must stay within an allowed workspace root: %s', path))
+    return nil, request_error(string.format('ACP file path must stay within an allowed workspace root: %s', path)), nil
+end
+
+---@param bufnr integer
+local function attach_write_guard(bufnr)
+    if guarded_buffers[bufnr] then
+        return
+    end
+
+    guarded_buffers[bufnr] = true
+
+    vim.api.nvim_create_autocmd('BufWritePre', {
+        group = write_guard_group,
+        buffer = bufnr,
+        callback = function(args)
+            local authorization = write_authorizations[args.buf]
+
+            if authorization == nil then
+                return
+            end
+
+            local target = args.file ~= '' and normalize_path(args.file) or vim.api.nvim_buf_get_name(args.buf)
+
+            if is_foreign_windows_path(target) then
+                error(string.format('ACP write authorization rejected a foreign Windows path: %s', target))
+            end
+
+            local canonical_target, canonical_error = canonical_path(target)
+
+            if canonical_target == nil then
+                error(canonical_error)
+            end
+
+            if not paths_equal(canonical_target, authorization.canonical_target) then
+                error(
+                    string.format(
+                        'ACP write authorization target changed from %s to %s',
+                        authorization.canonical_target,
+                        canonical_target
+                    )
+                )
+            end
+
+            if not authorization.allow_outside_roots then
+                local contained = false
+
+                for _, root in ipairs(authorization.canonical_roots) do
+                    if is_within_root(canonical_target, root) then
+                        contained = true
+                        break
+                    end
+                end
+
+                if not contained then
+                    error(string.format('ACP write authorization target left its allowed roots: %s', canonical_target))
+                end
+            end
+        end,
+    })
+
+    vim.api.nvim_create_autocmd('BufWritePost', {
+        group = write_guard_group,
+        buffer = bufnr,
+        callback = function(args)
+            write_authorizations[args.buf] = nil
+        end,
+    })
+
+    vim.api.nvim_create_autocmd('BufWipeout', {
+        group = write_guard_group,
+        buffer = bufnr,
+        once = true,
+        callback = function(args)
+            write_authorizations[args.buf] = nil
+            guarded_buffers[args.buf] = nil
+        end,
+    })
 end
 
 ---@param path string
@@ -359,7 +624,7 @@ end
 ---@param params legate.WriteTextFileRequest
 ---@return legate.WriteTextFileResponse?, table?
 function M.write_text_file(params)
-    local path, path_error = validate_absolute_path(params.path, params.cwd, {
+    local path, path_error, authorization = validate_absolute_path(params.path, params.cwd, {
         allow_loaded_buffer_write = true,
     })
 
@@ -383,6 +648,9 @@ function M.write_text_file(params)
     if write_error ~= nil then
         return nil, write_error
     end
+
+    write_authorizations[bufnr] = authorization
+    attach_write_guard(bufnr)
 
     return {}, nil
 end

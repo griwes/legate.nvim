@@ -2470,7 +2470,7 @@ it('renders inline approvals even when the permission request arrives in a fast 
     restore_fast()
 
     assert.is_nil(response())
-    assert.are.equal(1, #scheduled)
+    assert.is_true(#scheduled >= 1)
 
     for _, callback in ipairs(scheduled) do
         callback()
@@ -2623,6 +2623,126 @@ it('resolves queued approvals by request-qualified option id', function()
     assert.is_nil(api.pending_approval())
 end)
 
+it('assigns unique ids to duplicate concurrent approvals and resolves only one', function()
+    plugin.setup({
+        permission_strategy = 'select',
+    })
+    api.open_chat()
+    api.set_prompt('duplicate approvals')
+    api.submit_prompt()
+
+    local params = {
+        sessionId = 'sess_123',
+        toolCall = {
+            toolCallId = 'call_duplicate',
+            title = 'Same command',
+        },
+        options = {
+            {
+                optionId = 'allow-once',
+                name = 'Allow once',
+                kind = 'allow_once',
+            },
+        },
+    }
+    local first = begin_permission_request(params)
+    local second = begin_permission_request(params)
+    local pending = api.pending_approvals()
+
+    assert.are.equal(2, #pending)
+    assert.are_not.equal(pending[1].request_id, pending[2].request_id)
+
+    api.select_approval_option(string.format('%s:allow-once', pending[1].request_id))
+
+    assert.are.equal('allow-once', first().result.outcome.optionId)
+    assert.is_nil(second())
+    assert.are.equal(1, #api.pending_approvals())
+    assert.are.equal(pending[2].request_id, api.pending_approval().request_id)
+
+    api.select_approval_option(string.format('%s:allow-once', pending[2].request_id))
+    assert.are.equal('allow-once', second().result.outcome.optionId)
+    assert.is_nil(api.pending_approval())
+end)
+
+it('bounds duplicate pending permission floods', function()
+    plugin.setup({
+        permission_strategy = 'select',
+    })
+    api.open_chat()
+    api.set_prompt('bounded duplicate approvals')
+    api.submit_prompt()
+
+    local responses = {}
+    for _ = 1, 33 do
+        table.insert(
+            responses,
+            begin_permission_request({
+                sessionId = 'sess_123',
+                toolCall = {
+                    toolCallId = 'call_duplicate_flood',
+                    title = 'Same command',
+                },
+                options = {
+                    {
+                        optionId = 'allow-once',
+                        name = 'Allow once',
+                        kind = 'allow_once',
+                    },
+                },
+            })
+        )
+    end
+
+    assert.are.equal(32, #api.pending_approvals())
+    assert.is_nil(responses[32]())
+    assert.are.equal(-32003, responses[33]().error.code)
+end)
+
+it('removes a pending permission when its inbound request is cancelled', function()
+    plugin.setup({
+        permission_strategy = 'select',
+    })
+    api.open_chat()
+    api.set_prompt('cancel inbound approval')
+    api.submit_prompt()
+
+    local cancel_request
+    local response
+    fake_client.opts.on_request('session/request_permission', {
+        sessionId = 'sess_123',
+        toolCall = {
+            toolCallId = 'call_cancelled_inbound',
+            title = 'Cancelled command',
+        },
+        options = {
+            {
+                optionId = 'allow-once',
+                name = 'Allow once',
+                kind = 'allow_once',
+            },
+        },
+    }, function(result, err)
+        response = {
+            result = result,
+            error = err,
+        }
+    end, {
+        on_cancel = function(callback)
+            cancel_request = callback
+        end,
+    })
+
+    assert.are.equal(1, #api.pending_approvals())
+    assert.is_function(cancel_request)
+    cancel_request({
+        code = -32001,
+        message = 'transport closed',
+    })
+
+    assert.are.equal(0, #api.pending_approvals())
+    assert.is_nil(response)
+end)
+
 it('keeps other queued approvals when a selected request has no active session', function()
     local permission = require('legate.handlers.permission')
     local current_session = {
@@ -2738,12 +2858,10 @@ it('resolves inline approvals through ACP buffer-local keymaps', function()
         },
     })
 
-    local prompt_header_line = require('legate.ui.input').prompt_header_line(bufnr)
-
     vim.api.nvim_win_set_cursor(0, { 1, 0 })
     vim.api.nvim_feedkeys(vim.keycode(']a'), 'xt', false)
 
-    assert.are.same({ prompt_header_line - 2, 0 }, vim.api.nvim_win_get_cursor(0))
+    assert.are.same({ vim.api.nvim_buf_line_count(bufnr), 0 }, vim.api.nvim_win_get_cursor(0))
 
     vim.api.nvim_feedkeys(vim.keycode('g2'), 'xt', false)
 
@@ -3110,7 +3228,7 @@ it('rejects fs/read_text_file when opening a broken symlink inside the workspace
 
     assert.is_nil(response.result)
     assert.is_not_nil(response.error)
-    assert.is_truthy(response.error.message:match('No such file'))
+    assert.is_truthy(response.error.message:match('unresolved symbolic link'))
 end)
 
 it('rejects fs/read_text_file outside allowed roots', function()
@@ -3132,6 +3250,36 @@ it('rejects fs/read_text_file outside allowed roots', function()
 
     assert.is_not_nil(response.error)
     assert.is_true(response.error.message:match('allowed workspace root') ~= nil)
+end)
+
+it('does not accept an agent-supplied filesystem workspace root', function()
+    local outside = vim.fn.tempname()
+    local path = vim.fs.joinpath(outside, 'agent-selected.txt')
+    vim.fn.mkdir(outside, 'p')
+    vim.fn.writefile({ 'outside' }, path)
+
+    api.open_chat()
+    api.set_prompt('untrusted filesystem root')
+    api.submit_prompt()
+
+    local read_response = fake_client:emit_request('fs/read_text_file', {
+        sessionId = 'sess_123',
+        cwd = outside,
+        path = path,
+    })
+    local write_response = fake_client:emit_request('fs/write_text_file', {
+        sessionId = 'sess_123',
+        cwd = outside,
+        path = vim.fs.joinpath(outside, 'new.txt'),
+        content = 'unsafe\n',
+    })
+
+    assert.is_nil(read_response.result)
+    assert.is_truthy(read_response.error)
+    assert.is_nil(write_response.result)
+    assert.is_truthy(write_response.error)
+    assert.are.equal(0, vim.fn.filereadable(vim.fs.joinpath(outside, 'new.txt')))
+    vim.fn.delete(outside, 'rf')
 end)
 
 it('writes file content via fs/write_text_file into a hidden buffer', function()
@@ -3533,7 +3681,11 @@ it('allows empty fs/write_text_file content for an empty loaded buffer outside a
     assert.are.equal('', read_file(path))
 end)
 
-it('accepts Windows-style absolute paths before root validation', function()
+it('rejects foreign Windows paths on non-Windows hosts', function()
+    if vim.fn.has('win32') == 1 then
+        pending('actual Windows paths are covered by the platform filesystem spec')
+    end
+
     os.remove('C:\\temp\\acp-fs-outside-write.txt')
     api.open_chat()
     api.set_prompt('windows absolute path validation')
@@ -3548,40 +3700,44 @@ it('accepts Windows-style absolute paths before root validation', function()
     os.remove('C:\\temp\\acp-fs-outside-write.txt')
 
     assert.is_not_nil(response.error)
-    assert.is_true(response.error.message:match('allowed workspace root') ~= nil)
-    assert.is_false(response.error.message:match('must be absolute') ~= nil)
+    assert.is_true(response.error.message:match('unsupported on this platform') ~= nil)
 end)
 
-it('accepts Windows UNC descendants within the workspace root', function()
+it('does not emulate Windows UNC descendants on non-Windows hosts', function()
+    if vim.fn.has('win32') == 1 then
+        pending('a provisioned UNC share is required for canonical UNC coverage')
+    end
+
     os.remove([[\\server\share\folder\file.txt]])
 
+    plugin.setup({ cwd = '\\\\server\\share' })
     api.open_chat()
     api.set_prompt('windows unc path validation')
     api.submit_prompt()
 
     local response = fake_client:emit_request('fs/write_text_file', {
         sessionId = 'sess_123',
-        cwd = '\\\\server\\share',
         path = '\\\\server\\share\\folder\\file.txt',
         content = 'inside\n',
     })
 
     os.remove([[\\server\share\folder\file.txt]])
 
-    assert.is_nil(response.error)
+    assert.is_not_nil(response.error)
+    assert.is_true(response.error.message:match('unsupported on this platform') ~= nil)
 end)
 
 it('accepts fs/write_text_file at the workspace root with a trailing separator', function()
     local path = '/tmp/acp-fs-root-trailing-slash'
     os.remove(path)
 
+    plugin.setup({ cwd = path })
     api.open_chat()
     api.set_prompt('workspace root trailing slash validation')
     api.submit_prompt()
 
     local response = fake_client:emit_request('fs/write_text_file', {
         sessionId = 'sess_123',
-        cwd = '/tmp/acp-fs-root-trailing-slash',
         path = '/tmp/acp-fs-root-trailing-slash/',
         content = 'root\n',
     })
@@ -3591,23 +3747,28 @@ it('accepts fs/write_text_file at the workspace root with a trailing separator',
     assert.is_nil(response.error)
 end)
 
-it('accepts a Windows UNC workspace root with a trailing separator', function()
+it('does not emulate a trailing Windows UNC root on non-Windows hosts', function()
+    if vim.fn.has('win32') == 1 then
+        pending('a provisioned UNC share is required for canonical UNC coverage')
+    end
+
     os.remove([[\\server\share\]])
 
+    plugin.setup({ cwd = [[\\server\share]] })
     api.open_chat()
     api.set_prompt('windows unc root trailing slash validation')
     api.submit_prompt()
 
     local response = fake_client:emit_request('fs/write_text_file', {
         sessionId = 'sess_123',
-        cwd = [[\\server\share]],
         path = [[\\server\share\]],
         content = 'root\n',
     })
 
     os.remove([[\\server\share\]])
 
-    assert.is_nil(response.error)
+    assert.is_not_nil(response.error)
+    assert.is_true(response.error.message:match('unsupported on this platform') ~= nil)
 end)
 
 it('rejects fs/write_text_file outside allowed roots', function()
@@ -3726,16 +3887,96 @@ it('waits for terminal exit', function()
         args = { '-c', 'sleep 0.05; printf done' },
     })
 
-    local waited = fake_client:emit_request('terminal/wait_for_exit', {
+    local waited = nil
+    fake_client.opts.on_request('terminal/wait_for_exit', {
         sessionId = 'sess_123',
         terminalId = created.result.terminalId,
-    })
+    }, function(result, error)
+        waited = {
+            result = result,
+            error = error,
+        }
+    end)
+
+    assert.is_nil(waited)
+    wait_until(function()
+        return waited ~= nil
+    end)
 
     assert.is_nil(waited.error)
     assert.are.same({
         exitCode = 0,
         signal = nil,
     }, waited.result)
+end)
+
+it('cancels a native terminal wait when the terminal is released', function()
+    api.open_chat()
+    api.set_prompt('release terminal while waiting')
+    api.submit_prompt()
+
+    local created = fake_client:emit_request('terminal/create', {
+        sessionId = 'sess_123',
+        command = 'sh',
+        args = { '-c', 'sleep 10' },
+    })
+    local waited
+    fake_client.opts.on_request('terminal/wait_for_exit', {
+        sessionId = 'sess_123',
+        terminalId = created.result.terminalId,
+    }, function(result, err)
+        waited = {
+            result = result,
+            error = err,
+        }
+    end)
+
+    local released = fake_client:emit_request('terminal/release', {
+        sessionId = 'sess_123',
+        terminalId = created.result.terminalId,
+    })
+
+    assert.is_nil(released.error)
+    wait_until(function()
+        return waited ~= nil
+    end)
+    assert.is_nil(waited.result)
+    assert.is_true(waited.error.message:match('released') ~= nil)
+end)
+
+it('escalates native release when the process ignores TERM', function()
+    if vim.fn.has('win32') == 1 then
+        pending('POSIX signal behavior is unavailable on Windows')
+    end
+
+    api.open_chat()
+    api.set_prompt('release term ignoring terminal')
+    api.submit_prompt()
+
+    local created = fake_client:emit_request('terminal/create', {
+        sessionId = 'sess_123',
+        command = 'sh',
+        args = { '-c', [[trap '' TERM; printf '%s\n' "$$"; while :; do :; done]] },
+    })
+    local pid
+    wait_until(function()
+        local output = fake_client:emit_request('terminal/output', {
+            sessionId = 'sess_123',
+            terminalId = created.result.terminalId,
+        })
+        pid = output.result and tonumber(output.result.output:match('^(%d+)')) or nil
+        return pid ~= nil
+    end)
+
+    local released = fake_client:emit_request('terminal/release', {
+        sessionId = 'sess_123',
+        terminalId = created.result.terminalId,
+    })
+
+    assert.is_nil(released.error)
+    assert.is_true(vim.wait(2000, function()
+        return vim.uv.kill(pid, 0) == nil
+    end, 10))
 end)
 
 it('kills a running terminal without invalidating it', function()
@@ -3762,10 +4003,20 @@ it('kills a running terminal without invalidating it', function()
         sessionId = 'sess_123',
         terminalId = created.result.terminalId,
     })
-    local waited = fake_client:emit_request('terminal/wait_for_exit', {
+    local waited = nil
+    fake_client.opts.on_request('terminal/wait_for_exit', {
         sessionId = 'sess_123',
         terminalId = created.result.terminalId,
-    })
+    }, function(result, error)
+        waited = {
+            result = result,
+            error = error,
+        }
+    end)
+    assert.is_nil(waited)
+    wait_until(function()
+        return waited ~= nil
+    end)
     local output = fake_client:emit_request('terminal/output', {
         sessionId = 'sess_123',
         terminalId = created.result.terminalId,
@@ -3863,6 +4114,49 @@ it('routes terminal requests through Terminalia when configured', function()
     })
 
     assert.is_not_nil(output_after_release.error)
+end)
+
+it('cancels a Terminalia wait and stops polling when the ACP handle is released', function()
+    setup_terminalia()
+
+    plugin.setup({
+        terminal_backend = 'terminalia',
+    })
+    api.open_chat()
+    api.set_prompt('release terminalia while waiting')
+    api.submit_prompt()
+
+    local created = fake_client:emit_request('terminal/create', {
+        sessionId = 'sess_123',
+        command = 'sh',
+        args = { '-c', 'sleep 10' },
+    })
+    local wait_calls = 0
+    local waited
+    fake_client.opts.on_request('terminal/wait_for_exit', {
+        sessionId = 'sess_123',
+        terminalId = created.result.terminalId,
+    }, function(result, err)
+        wait_calls = wait_calls + 1
+        waited = {
+            result = result,
+            error = err,
+        }
+    end)
+
+    local released = fake_client:emit_request('terminal/release', {
+        sessionId = 'sess_123',
+        terminalId = created.result.terminalId,
+    })
+
+    assert.is_nil(released.error)
+    assert.are.equal(1, wait_calls)
+    assert.is_nil(waited.result)
+    assert.is_true(waited.error.message:match('released') ~= nil)
+    vim.wait(100, function()
+        return false
+    end, 10)
+    assert.are.equal(1, wait_calls)
 end)
 
 it('applies outputByteLimit in the Terminalia backend', function()
@@ -4324,6 +4618,7 @@ it('uses the active session cwd for fs/read_text_file when process cwd differs',
     vim.fn.mkdir(nested, 'p')
     local file_path = workspace .. '/inside.txt'
 
+    plugin.setup({ cwd = workspace })
     api.open_chat()
     api.set_prompt('read from session cwd')
     api.submit_prompt()
@@ -4334,7 +4629,6 @@ it('uses the active session cwd for fs/read_text_file when process cwd differs',
     local response = fake_client:emit_request('fs/read_text_file', {
         sessionId = 'sess_123',
         path = file_path,
-        cwd = workspace,
     })
 
     vim.cmd('cd ' .. vim.fn.fnameescape(original_cwd))

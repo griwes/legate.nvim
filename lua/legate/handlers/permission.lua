@@ -2,6 +2,8 @@ local continuity = require('legate.session')
 local methods = require('legate.core.methods')
 
 local M = {}
+local next_permission_request_ordinal = 1
+local MAX_PENDING_PERMISSION_REQUESTS = 32
 
 ---@param option_kind legate.PermissionOptionKind
 ---@param options legate.PermissionOption[]
@@ -590,17 +592,33 @@ end
 ---@param current_session legate.Session
 ---@param permission legate.PermissionRequest
 ---@param respond fun(result?: any, error?: table)
----@param opts? { source?: string, ministry_request?: { server: string, method: string, arguments: table, context: table } }
+---@param opts? { source?: string, ministry_request?: { server: string, method: string, arguments: table, context: table }, control?: legate.RpcInboundRequestControl }
+---@return boolean
 local function enqueue_pending_permission(ctx, generation, current_session, permission, respond, opts)
-    local request_id =
-        string.format('%s:%s:%d', current_session.id, permission.toolCall.toolCallId or 'approval', generation)
+    local pending_permissions = ctx.get_pending_permissions()
+
+    if #pending_permissions >= MAX_PENDING_PERMISSION_REQUESTS then
+        respond(nil, {
+            code = -32003,
+            message = string.format('ACP pending permission count exceeds %d', MAX_PENDING_PERMISSION_REQUESTS),
+        })
+        return false
+    end
+
+    local request_id = string.format(
+        '%s:%s:%d:%d',
+        current_session.id,
+        permission.toolCall.toolCallId or 'approval',
+        generation,
+        next_permission_request_ordinal
+    )
+    next_permission_request_ordinal = next_permission_request_ordinal + 1
     permission.request_id = request_id
     permission.generation = generation
 
     ctx.session.wait_for_approval(current_session, permission)
 
-    local pending_permissions = ctx.get_pending_permissions()
-    table.insert(pending_permissions, {
+    local pending_permission = {
         request_id = request_id,
         generation = generation,
         local_session_id = current_session.id,
@@ -608,16 +626,62 @@ local function enqueue_pending_permission(ctx, generation, current_session, perm
         source = opts and opts.source or nil,
         ministry_request = opts and vim.deepcopy(opts.ministry_request) or nil,
         respond = respond,
-    })
+    }
+    table.insert(pending_permissions, pending_permission)
     ctx.set_pending_permissions(pending_permissions)
+
+    if opts ~= nil and opts.control ~= nil then
+        opts.control.on_cancel(function()
+            local live_permissions = ctx.get_pending_permissions()
+            local retained = {}
+            local removed = false
+
+            for _, candidate in ipairs(live_permissions) do
+                if not removed and candidate == pending_permission then
+                    removed = true
+                else
+                    table.insert(retained, candidate)
+                end
+            end
+
+            if not removed then
+                return
+            end
+
+            ctx.set_pending_permissions(retained)
+            continuity.clear_pending_approval_by_request_id(current_session, pending_permission.request_id)
+            ctx.rerender(current_session)
+        end)
+    end
+
     ctx.reveal_inline_approval(current_session)
+    return true
+end
+
+---@param pending_permissions legate.PendingPermissionState[]
+---@param pending_permission legate.PendingPermissionState
+---@return legate.PendingPermissionState[]
+local function remove_pending_permission(pending_permissions, pending_permission)
+    local retained = {}
+    local removed = false
+
+    for _, candidate in ipairs(pending_permissions) do
+        if not removed and candidate == pending_permission then
+            removed = true
+        else
+            table.insert(retained, candidate)
+        end
+    end
+
+    return retained
 end
 
 ---@param ctx legate.TransportContext
 ---@param generation integer
 ---@param permission legate.PermissionRequest
 ---@param respond fun(result?: any, error?: table)
-function M.handle_request(ctx, generation, permission, respond)
+---@param control? legate.RpcInboundRequestControl
+function M.handle_request(ctx, generation, permission, respond, control)
     local current_session = ctx.active_request_session(permission)
 
     if current_session == nil then
@@ -640,6 +704,7 @@ function M.handle_request(ctx, generation, permission, respond)
         enqueue_pending_permission(ctx, generation, current_session, permission, respond, {
             source = 'ministry',
             ministry_request = ministry_request,
+            control = control,
         })
         return
     end
@@ -665,7 +730,9 @@ function M.handle_request(ctx, generation, permission, respond)
         return
     end
 
-    enqueue_pending_permission(ctx, generation, current_session, permission, respond)
+    enqueue_pending_permission(ctx, generation, current_session, permission, respond, {
+        control = control,
+    })
 end
 
 ---@param ctx legate.TransportContext
@@ -681,15 +748,7 @@ function M.select_pending_approval(ctx, current_session, selection)
     end
 
     if not ctx.is_live_generation(pending_permission.generation) then
-        local retained = {}
-
-        for _, candidate in ipairs(pending_permissions) do
-            if candidate.request_id ~= pending_permission.request_id then
-                table.insert(retained, candidate)
-            end
-        end
-
-        ctx.set_pending_permissions(retained)
+        ctx.set_pending_permissions(remove_pending_permission(pending_permissions, pending_permission))
         continuity.clear_pending_approval_by_request_id(current_session, pending_permission.request_id)
         ctx.rerender(current_session)
         error('ACP approval is no longer active')
@@ -698,15 +757,7 @@ function M.select_pending_approval(ctx, current_session, selection)
     local live_session = ctx.active_request_session(pending_permission.permission)
 
     if live_session == nil then
-        local retained = {}
-
-        for _, candidate in ipairs(pending_permissions) do
-            if candidate.request_id ~= pending_permission.request_id then
-                table.insert(retained, candidate)
-            end
-        end
-
-        ctx.set_pending_permissions(retained)
+        ctx.set_pending_permissions(remove_pending_permission(pending_permissions, pending_permission))
         continuity.clear_pending_approval_by_request_id(current_session, pending_permission.request_id)
         ctx.rerender(current_session)
         error('ACP approval is no longer active')
@@ -723,15 +774,7 @@ function M.select_pending_approval(ctx, current_session, selection)
         end
     end
 
-    local retained = {}
-
-    for _, candidate in ipairs(pending_permissions) do
-        if candidate.request_id ~= pending_permission.request_id then
-            table.insert(retained, candidate)
-        end
-    end
-
-    ctx.set_pending_permissions(retained)
+    ctx.set_pending_permissions(remove_pending_permission(pending_permissions, pending_permission))
     ctx.session.record_approval(
         live_session,
         pending_permission.permission,
@@ -751,8 +794,8 @@ function M.request_handlers()
     return {
         [methods.SESSION_REQUEST_PERMISSION] = {
             requires_active_session = false,
-            handle = function(ctx, params, respond, _, generation)
-                M.handle_request(ctx, generation, params, respond)
+            handle = function(ctx, params, respond, _, generation, control)
+                M.handle_request(ctx, generation, params, respond, control)
             end,
         },
     }

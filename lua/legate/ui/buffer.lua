@@ -145,7 +145,7 @@ local function configure(bufnr)
     vim.bo[bufnr].swapfile = false
     vim.bo[bufnr].buflisted = false
     vim.bo[bufnr].filetype = config.get().filetype
-    vim.bo[bufnr].omnifunc = "v:lua.require'legate.ui.completion'.complete"
+    vim.bo[bufnr].omnifunc = ''
     vim.bo[bufnr].modifiable = false
     vim.bo[bufnr].modified = false
 end
@@ -291,6 +291,23 @@ function M.open()
     return bufnr
 end
 
+---@return integer?
+function M.visible_window()
+    local bufnr = M.get()
+
+    if bufnr == nil then
+        return nil
+    end
+
+    for _, winid in ipairs(vim.api.nvim_list_wins()) do
+        if vim.api.nvim_win_is_valid(winid) and vim.api.nvim_win_get_buf(winid) == bufnr then
+            return winid
+        end
+    end
+
+    return nil
+end
+
 ---@param bufnr? integer
 ---@return boolean
 function M.reveal_in_placeholder(bufnr)
@@ -320,6 +337,12 @@ function M.clear()
     local bufnr = M.get()
 
     state.bufnr = nil
+
+    local ok, input = pcall(require, 'legate.ui.input')
+
+    if ok and type(input.clear) == 'function' then
+        input.clear()
+    end
 
     if bufnr ~= nil and vim.api.nvim_buf_is_valid(bufnr) then
         local ok, approval_ui = pcall(require, 'legate.ui.approval')

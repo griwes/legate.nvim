@@ -309,10 +309,10 @@ function M.ensure()
 
     create('LegateQueue', function()
         run_user_action(function()
-            api().queue_prompt()
+            api().submit_prompt_async()
         end)
     end, {
-        desc = 'Queue the Legate prompt for a future turn',
+        desc = 'Queue the Legate prompt, or submit it immediately when it is the user turn',
     })
 
     create('LegateSteer', function()

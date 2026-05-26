@@ -104,6 +104,16 @@ function M.new(deps)
     end
 
     ---@param current_session legate.Session
+    ---@param prompts string[]
+    ---@return legate.Session
+    function helper.set_queued_prompts(current_session, prompts)
+        current_session.queued_prompts = vim.deepcopy(prompts or {})
+        current_session.updated_at = deps.now()
+
+        return current_session
+    end
+
+    ---@param current_session legate.Session
     ---@return string?
     function helper.pop_queued_prompt(current_session)
         current_session.queued_prompts = current_session.queued_prompts or {}

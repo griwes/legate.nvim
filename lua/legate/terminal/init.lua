@@ -4,6 +4,11 @@ local config = require('legate.config')
 local M = {}
 
 local REQUEST_ERROR_CODE = -32000
+local NATIVE_RELEASE_GRACE_MS = 250
+
+---@class legate.TerminalWaiter
+---@field callback fun(result?: legate.TerminalWaitForExitResponse, error?: table)
+---@field active boolean
 
 ---@class legate.NativeTerminalState
 ---@field handle legate.TerminalHandle
@@ -13,12 +18,16 @@ local REQUEST_ERROR_CODE = -32000
 ---@field output_byte_limit integer?
 ---@field exit_status legate.TerminalExitStatus?
 ---@field preview_bufnr integer?
+---@field waiters legate.TerminalWaiter[]
+---@field release_started boolean
+---@field process_group boolean
 
 ---@type table<string, legate.NativeTerminalState>
 local terminals = {}
 ---@class legate.TerminaliaTerminalState
 ---@field handle legate.TerminalHandle
 ---@field output_byte_limit integer?
+---@field waiters legate.TerminalWaiter[]
 
 ---@type table<string, legate.TerminaliaTerminalState>
 local terminalia_terminals = {}
@@ -116,7 +125,7 @@ end
 local function update_preview(state)
     local bufnr = state.preview_bufnr
 
-    if bufnr == nil or not vim.api.nvim_buf_is_valid(bufnr) then
+    if bufnr == nil then
         return
     end
 
@@ -234,6 +243,117 @@ local function terminal_state(handle)
     return state, nil
 end
 
+---@param callback fun(result?: legate.TerminalWaitForExitResponse, error?: table)
+---@param result? legate.TerminalWaitForExitResponse
+---@param error? table
+local function invoke_waiter(callback, result, error)
+    local ok, callback_error = xpcall(function()
+        callback(result, error)
+    end, debug.traceback)
+
+    if not ok then
+        pcall(vim.notify, string.format('ACP terminal wait callback failed: %s', callback_error), vim.log.levels.ERROR)
+    end
+end
+
+---@param waiters legate.TerminalWaiter[]
+---@param target legate.TerminalWaiter
+local function remove_waiter(waiters, target)
+    for index, waiter in ipairs(waiters) do
+        if waiter == target then
+            table.remove(waiters, index)
+            return
+        end
+    end
+end
+
+---@param callback fun(result?: legate.TerminalWaitForExitResponse, error?: table)
+---@param result? legate.TerminalWaitForExitResponse
+---@param error? table
+---@return function
+local function schedule_waiter(callback, result, error)
+    local waiter = {
+        callback = callback,
+        active = true,
+    }
+
+    vim.schedule(function()
+        if not waiter.active then
+            return
+        end
+
+        waiter.active = false
+        invoke_waiter(callback, result, error)
+    end)
+
+    return function()
+        waiter.active = false
+    end
+end
+
+---@param state legate.NativeTerminalState
+local function complete_native_waiters(state)
+    local waiters = state.waiters
+    state.waiters = {}
+
+    vim.schedule(function()
+        local result = state.exit_status and vim.deepcopy(state.exit_status) or nil
+
+        for _, waiter in ipairs(waiters) do
+            if waiter.active then
+                waiter.active = false
+                invoke_waiter(waiter.callback, result, nil)
+            end
+        end
+    end)
+end
+
+---@param state legate.NativeTerminalState
+---@param error table
+local function cancel_native_waiters(state, error)
+    local waiters = state.waiters
+    state.waiters = {}
+
+    vim.schedule(function()
+        for _, waiter in ipairs(waiters) do
+            if waiter.active then
+                waiter.active = false
+                invoke_waiter(waiter.callback, nil, vim.deepcopy(error))
+            end
+        end
+    end)
+end
+
+---@param state legate.NativeTerminalState
+---@param signal integer
+local function signal_native_process(state, signal)
+    if state.process_group then
+        local ok, result = pcall(vim.uv.kill, -state.system.pid, signal)
+
+        if ok and result ~= nil then
+            return
+        end
+    end
+
+    pcall(state.system.kill, state.system, signal)
+end
+
+---@param state legate.NativeTerminalState
+local function release_native_process(state)
+    if state.exit_status ~= nil or state.release_started then
+        return
+    end
+
+    state.release_started = true
+    signal_native_process(state, 15)
+
+    vim.defer_fn(function()
+        if state.exit_status == nil then
+            signal_native_process(state, 9)
+        end
+    end, NATIVE_RELEASE_GRACE_MS)
+end
+
 ---@param handle legate.TerminalHandle
 ---@param timeout_ms? integer
 ---@return legate.TerminalWaitForExitResponse?, table?
@@ -248,15 +368,50 @@ local function wait_for_exit(handle, timeout_ms)
         return vim.deepcopy(state.exit_status), nil
     end
 
-    local result = state.system:wait(timeout_ms)
+    if vim.in_fast_event() then
+        return nil, request_error('Synchronous ACP terminal waits are unavailable in fast event callbacks')
+    end
 
-    if result == nil then
+    local completed = vim.wait(timeout_ms or config.get().request_timeout_ms, function()
+        return state.exit_status ~= nil
+    end, 10)
+
+    if not completed then
         return nil, request_error(string.format('ACP terminal wait timed out: %s', handle.id))
     end
 
-    state.exit_status = exit_status_from_result(result)
-
     return vim.deepcopy(state.exit_status), nil
+end
+
+---@param handle legate.TerminalHandle
+---@param callback fun(result?: legate.TerminalWaitForExitResponse, error?: table)
+---@return function
+local function wait_for_exit_async(handle, callback)
+    local state, state_error = terminal_state(handle)
+
+    if state == nil then
+        return schedule_waiter(callback, nil, state_error)
+    end
+
+    if state.exit_status ~= nil then
+        local result = vim.deepcopy(state.exit_status)
+        return schedule_waiter(callback, result, nil)
+    end
+
+    local waiter = {
+        callback = callback,
+        active = true,
+    }
+    table.insert(state.waiters, waiter)
+
+    return function()
+        if not waiter.active then
+            return
+        end
+
+        waiter.active = false
+        remove_waiter(state.waiters, waiter)
+    end
 end
 
 ---@type legate.TerminalBackend
@@ -284,10 +439,17 @@ local native_backend = {
             output_byte_limit = opts.outputByteLimit,
             exit_status = nil,
             preview_bufnr = nil,
+            waiters = {},
+            release_started = false,
+            process_group = vim.fn.has('win32') == 0 and vim.fn.executable('setsid') == 1,
         }
 
         local argv = { opts.command }
         vim.list_extend(argv, opts.args or {})
+
+        if state.process_group then
+            table.insert(argv, 1, 'setsid')
+        end
 
         local ok, system_or_error = pcall(vim.system, argv, {
             cwd = cwd,
@@ -298,6 +460,7 @@ local native_backend = {
             text = true,
         }, function(result)
             state.exit_status = exit_status_from_result(result)
+            complete_native_waiters(state)
         end)
 
         if not ok then
@@ -333,6 +496,7 @@ local native_backend = {
             nil
     end,
     wait = wait_for_exit,
+    wait_async = wait_for_exit_async,
     kill = function(handle)
         local state, state_error = terminal_state(handle)
 
@@ -341,7 +505,7 @@ local native_backend = {
         end
 
         if state.exit_status == nil then
-            state.system:kill(15)
+            signal_native_process(state, 15)
         end
 
         return {}, nil
@@ -353,10 +517,8 @@ local native_backend = {
             return nil, state_error
         end
 
-        if state.exit_status == nil then
-            state.system:kill(15)
-            wait_for_exit(handle)
-        end
+        cancel_native_waiters(state, request_error(string.format('ACP terminal was released: %s', handle.id)))
+        release_native_process(state)
 
         terminals[handle.id] = nil
 
@@ -419,6 +581,7 @@ local terminalia_backend = {
                 session_id = opts.sessionId,
             },
             output_byte_limit = opts.outputByteLimit,
+            waiters = {},
         }
 
         terminalia_terminals[state.handle.id] = state
@@ -477,6 +640,75 @@ local terminalia_backend = {
             signal = nil,
         }, nil
     end,
+    wait_async = function(handle, callback)
+        local state, state_error = terminalia_state(handle)
+
+        if state == nil then
+            return schedule_waiter(callback, nil, state_error)
+        end
+
+        local waiter = {
+            callback = callback,
+            active = true,
+        }
+        table.insert(state.waiters, waiter)
+
+        local function complete(result, error)
+            if not waiter.active then
+                return
+            end
+
+            waiter.active = false
+            remove_waiter(state.waiters, waiter)
+            invoke_waiter(callback, result, error)
+        end
+
+        local function poll()
+            if not waiter.active then
+                return
+            end
+
+            local api_ok, terminal_api = pcall(terminalia_api)
+
+            if not api_ok then
+                complete(nil, request_error(tostring(terminal_api)))
+                return
+            end
+
+            local get_ok, terminal = pcall(terminal_api.get, state.handle.id)
+
+            if not get_ok then
+                complete(nil, request_error(tostring(terminal)))
+                return
+            end
+
+            if terminal == nil then
+                complete(nil, request_error(string.format('Unknown ACP terminal id: %s', handle.id)))
+                return
+            end
+
+            if terminal.status == 'exited' then
+                complete({
+                    exitCode = terminal.exit_code,
+                    signal = nil,
+                }, nil)
+                return
+            end
+
+            vim.defer_fn(poll, 20)
+        end
+
+        vim.schedule(poll)
+
+        return function()
+            if not waiter.active then
+                return
+            end
+
+            waiter.active = false
+            remove_waiter(state.waiters, waiter)
+        end
+    end,
     kill = function(handle)
         local state, state_error = terminalia_state(handle)
 
@@ -493,6 +725,20 @@ local terminalia_backend = {
 
         if state == nil then
             return nil, state_error
+        end
+
+        local waiters = state.waiters
+        state.waiters = {}
+
+        for _, waiter in ipairs(waiters) do
+            if waiter.active then
+                waiter.active = false
+                invoke_waiter(
+                    waiter.callback,
+                    nil,
+                    request_error(string.format('ACP terminal was released: %s', handle.id))
+                )
+            end
         end
 
         terminalia_terminals[handle.id] = nil
@@ -552,6 +798,13 @@ function M.wait_for_exit(params)
     return M.resolve().wait(request_handle(params.terminalId, params.sessionId))
 end
 
+---Wait for an ACP terminal without blocking the Neovim event loop.
+---@param params legate.TerminalWaitForExitRequest
+---@param callback fun(result?: legate.TerminalWaitForExitResponse, error?: table)
+function M.wait_for_exit_async(params, callback)
+    return M.resolve().wait_async(request_handle(params.terminalId, params.sessionId), callback)
+end
+
 ---@param params legate.TerminalKillRequest
 ---@return legate.TerminalKillResponse?, table?
 function M.kill(params)
@@ -567,10 +820,8 @@ end
 ---Clear all live ACP terminal state.
 function M.clear()
     for id, state in pairs(terminals) do
-        if state.exit_status == nil then
-            state.system:kill(15)
-            wait_for_exit(state.handle)
-        end
+        cancel_native_waiters(state, request_error(string.format('ACP terminal was cleared: %s', id)))
+        release_native_process(state)
 
         terminals[id] = nil
     end
@@ -579,6 +830,20 @@ function M.clear()
 
     if ok then
         for id, handle in pairs(terminalia_terminals) do
+            local waiters = handle.waiters
+            handle.waiters = {}
+
+            for _, waiter in ipairs(waiters) do
+                if waiter.active then
+                    waiter.active = false
+                    invoke_waiter(
+                        waiter.callback,
+                        nil,
+                        request_error(string.format('ACP terminal was cleared: %s', id))
+                    )
+                end
+            end
+
             pcall(terminal_api.release, handle.handle.id)
             terminalia_terminals[id] = nil
         end

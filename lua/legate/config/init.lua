@@ -10,6 +10,15 @@ local defaults = {
     enable_hover_lsp = true,
     prompt_header = '## Prompt',
     transcript_header = '## Transcript',
+    input_split = {
+        header = 'Prompt',
+        min_height = 1,
+        max_height = 5,
+    },
+    queue_split = {
+        header = 'Queue',
+        max_height = 6,
+    },
     protocol_version = 1,
     client_info = {
         name = 'legate.nvim',

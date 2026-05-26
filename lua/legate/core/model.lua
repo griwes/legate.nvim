@@ -116,6 +116,7 @@
 ---@field send fun(handle: legate.TerminalHandle, data: string)
 ---@field output fun(handle: legate.TerminalHandle): legate.TerminalOutputResponse?, table?
 ---@field wait fun(handle: legate.TerminalHandle, timeout_ms?: integer): legate.TerminalWaitForExitResponse?, table?
+---@field wait_async fun(handle: legate.TerminalHandle, callback: fun(result?: legate.TerminalWaitForExitResponse, error?: table)): fun()
 ---@field kill fun(handle: legate.TerminalHandle): legate.TerminalKillResponse?, table?
 ---@field release fun(handle: legate.TerminalHandle): legate.TerminalReleaseResponse?, table?
 ---@field reveal fun(handle: legate.TerminalHandle): table?
@@ -379,7 +380,7 @@
 ---@class legate.RpcClient
 ---@field start fun(self: legate.RpcClient): boolean, string?
 ---@field request_sync fun(self: legate.RpcClient, method: string, params: table, timeout_ms?: integer): any, table?
----@field request fun(self: legate.RpcClient, method: string, params: table, callback: fun(result?: any, error?: table))
+---@field request fun(self: legate.RpcClient, method: string, params: table, callback: fun(result?: any, error?: table), timeout_ms?: integer)
 ---@field notify fun(self: legate.RpcClient, method: string, params: table)
 ---@field close fun(self: legate.RpcClient)
 

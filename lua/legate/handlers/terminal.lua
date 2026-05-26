@@ -24,9 +24,16 @@ function M.request_handlers()
         [methods.TERMINAL_OUTPUT] = terminal_handler(function(terminal_module, params)
             return terminal_module.output(params)
         end),
-        [methods.TERMINAL_WAIT_FOR_EXIT] = terminal_handler(function(terminal_module, params)
-            return terminal_module.wait_for_exit(params)
-        end),
+        [methods.TERMINAL_WAIT_FOR_EXIT] = {
+            requires_active_session = true,
+            handle = function(ctx, params, respond, _, _, control)
+                local cancel_wait = ctx.terminal.wait_for_exit_async(params, respond)
+
+                if control ~= nil then
+                    control.on_cancel(cancel_wait)
+                end
+            end,
+        },
         [methods.TERMINAL_KILL] = terminal_handler(function(terminal_module, params)
             return terminal_module.kill(params)
         end),

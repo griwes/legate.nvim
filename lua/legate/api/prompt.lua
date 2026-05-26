@@ -59,6 +59,16 @@ function M.new(deps)
 
         if buffer.get() ~= nil and selected_session ~= nil and selected_session.id == current_session.id then
             render.render(current_session, prompt)
+            input.refresh(current_session, buffer.visible_window())
+        end
+    end
+
+    ---@param current_session legate.Session
+    local function clear_selected_input(current_session)
+        local selected_session = deps.continuity.current()
+
+        if selected_session ~= nil and selected_session.id == current_session.id then
+            input.set_prompt(buffer.get() or 0, '')
         end
     end
 
@@ -69,6 +79,7 @@ function M.new(deps)
         assert_nonempty_prompt(prompt)
 
         current_session = deps.continuity.enqueue_prompt(current_session, prompt)
+        clear_selected_input(current_session)
         render_if_selected(current_session, '')
 
         return current_session
@@ -81,6 +92,7 @@ function M.new(deps)
         assert_can_start_turn(current_session, prompt)
         deps.continuity.set_draft_prompt(current_session, prompt)
         current_session = deps.continuity.begin_prompt(current_session, prompt)
+        clear_selected_input(current_session)
         local turn_id = deps.continuity.current_turn_id(current_session)
 
         render_if_selected(current_session, '')
@@ -123,6 +135,13 @@ function M.new(deps)
     ---@param stop_reason? legate.StopReason
     ---@return boolean
     function helper.drain_queue(current_session, stop_reason)
+        if vim.in_fast_event() then
+            vim.schedule(function()
+                helper.drain_queue(current_session, stop_reason)
+            end)
+            return false
+        end
+
         if stop_reason == 'cancelled' then
             return false
         end
@@ -176,6 +195,7 @@ function M.new(deps)
         end
 
         current_session = deps.continuity.begin_prompt(current_session, prompt)
+        clear_selected_input(current_session)
 
         render_if_selected(current_session, '')
 
@@ -228,10 +248,11 @@ function M.new(deps)
 
         if prompt == nil then
             prompt = current_session.draft_prompt or ''
-            render.render(current_session, prompt)
         else
             deps.continuity.set_draft_prompt(current_session, prompt)
         end
+
+        render.render(current_session, prompt)
 
         return bufnr, current_session, prompt
     end
@@ -242,6 +263,7 @@ function M.new(deps)
 
         buffer.open()
         render.render(current_session, prompt)
+        input.refresh(current_session, vim.api.nvim_get_current_win())
         vim.api.nvim_win_set_cursor(0, {
             vim.api.nvim_buf_line_count(bufnr),
             0,
@@ -355,7 +377,9 @@ function M.new(deps)
         target_session = deps.continuity.cancel(target_session)
 
         if current_session ~= nil and current_session.id == target_session.id then
+            input.set_prompt(buffer.get() or 0, prompt)
             render.render(target_session, prompt)
+            input.refresh(target_session, buffer.visible_window())
         end
 
         return target_session
