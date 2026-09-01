@@ -6,14 +6,23 @@ Neovim-native ACP client focused on a single chat buffer and explicit terminal/s
 
 Core protocol slice in progress. The repo now has a typed setup surface, named Legate adapters with session-aware adapter selection, config-driven ACP option overrides, a single reusable Markdown chat buffer, a real ACP stdio JSON-RPC boundary, local session persistence, prompt submission through `session/prompt`, streamed `session/update` handling, session config-option UX, slash-command UX, metadata-driven terminal-stream rendering for the verified `zed-industries/codex-acp` `_meta` shape, and both native and `terminalia.nvim` terminal backends.
 
+## Requirements
+
+- Neovim 0.11 or newer
+- an ACP adapter executable; the example below uses `codex-acp`
+- optional: `terminalia.nvim` for visible terminal ownership, `ministry.nvim`
+  for Neovim MCP injection, and `statuesque.nvim` for status rendering
+
+Linux is the primary supported and CI-tested platform. The project is in early
+development and currently publishes from `main` without a stable release tag.
+
 ## Installation
 
-Example local `lazy.nvim` spec:
+With `lazy.nvim`:
 
 ```lua
 {
-    dir = vim.fn.expand("~/projects/neovim-plugin-orchestration/legate.nvim"),
-    name = 'legate.nvim',
+    'griwes/legate.nvim',
     opts = {
         default_adapter = 'codex',
         adapters = {
@@ -28,6 +37,9 @@ Example local `lazy.nvim` spec:
     },
 }
 ```
+
+Run `:checkhealth legate` after installation. See `:help legate` for the
+adapter, session, and command overview.
 
 ## Commands
 
@@ -308,3 +320,7 @@ The live terminal-selection probe also uses real `codex-acp` with `auth_method =
 
 for backend and guidance-strength comparison. The latest real `native` probes against installed `zed-industries/codex-acp` do reach the injected MCP server now: they issue `tools/list`, call `neovim/terminal/create|wait|output|release`, and complete the probe without any generic execute fallback. The remaining split-routing mismatch is narrower now: current `codex-acp` MCP calls still arrive as `server = "neovim"` plus `tool = "neovim/terminal/create"` instead of the canonical `tool = "terminal/create"` shape, but Legate now tolerates that duplicate-prefixed form in the default terminal approval path and records the routing mismatch as probe evidence instead of blocking execution.
 ACP now auto-approves the injected `neovim/terminal/*` permission path in default mode, so both the strict and split-routing live probes reach full MCP execution and a successful `ACP_TERMINAL_SELECTION_PROBE_OK` response without any generic execute fallback, even though the split-routing probe still records the duplicated tool-field prefix from the current upstream runtime.
+
+## License
+
+Apache-2.0. See [`LICENSE`](LICENSE).
