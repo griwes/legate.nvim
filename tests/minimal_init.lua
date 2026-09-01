@@ -3,22 +3,22 @@ vim.g.maplocalleader = ' '
 
 vim.opt.runtimepath:prepend(vim.fn.getcwd())
 
-local mcp_nvim_path = vim.env.MCP_NVIM_PATH
-if not mcp_nvim_path or mcp_nvim_path == '' then
-    error('MCP_NVIM_PATH must point to a ministry.nvim checkout')
+local ministry_nvim_path = vim.env.MINISTRY_NVIM_PATH
+if not ministry_nvim_path or ministry_nvim_path == '' then
+    error('MINISTRY_NVIM_PATH must point to a ministry.nvim checkout')
 end
 
-mcp_nvim_path = vim.fs.normalize(mcp_nvim_path)
-if vim.fn.isdirectory(mcp_nvim_path) == 0 then
+ministry_nvim_path = vim.fs.normalize(ministry_nvim_path)
+if vim.fn.isdirectory(ministry_nvim_path) == 0 then
     error(
         string.format(
-            'ministry.nvim test dependency not found at %s; set MCP_NVIM_PATH to the plugin checkout',
-            mcp_nvim_path
+            'ministry.nvim test dependency not found at %s; set MINISTRY_NVIM_PATH to the plugin checkout',
+            ministry_nvim_path
         )
     )
 end
 
-vim.opt.runtimepath:prepend(mcp_nvim_path)
+vim.opt.runtimepath:prepend(ministry_nvim_path)
 
 local lazypath = vim.fn.stdpath('data') .. '/lazy/lazy.nvim'
 

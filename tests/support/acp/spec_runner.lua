@@ -123,7 +123,15 @@ function M.run(description, body_path)
         local function setup_terminalia()
             local history_dir = vim.fn.tempname()
             local state_file = vim.fn.tempname()
-            local repo = vim.fn.fnamemodify(vim.fn.getcwd() .. '/../terminalia.nvim', ':p')
+            local repo = vim.env.TERMINALIA_NVIM_PATH
+
+            if repo == nil or repo == '' then
+                repo = vim.fn.fnamemodify(vim.fn.getcwd() .. '/../terminalia.nvim', ':p')
+            end
+            repo = vim.fs.normalize(repo)
+            if vim.fn.isdirectory(repo) == 0 then
+                error('TERMINALIA_NVIM_PATH is not a plugin checkout: ' .. repo)
+            end
 
             vim.opt.runtimepath:prepend(repo)
             clear_terminalia_modules()
