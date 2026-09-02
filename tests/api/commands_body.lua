@@ -19,6 +19,20 @@ local function write_json(path, payload)
     vim.fn.writefile({ vim.json.encode(payload) }, path)
 end
 
+---@param name string
+---@param arglead string
+---@param cmdline string
+---@return string[]
+local function complete_command(name, arglead, cmdline)
+    local definition = assert(vim.api.nvim_get_commands({ builtin = false })[name])
+
+    if type(definition.complete) == 'function' then
+        return definition.complete(arglead, cmdline, #cmdline)
+    end
+
+    return vim.fn.getcompletion(cmdline, 'cmdline')
+end
+
 ---@param session table
 ---@return table
 local function persisted_session_index_entry(session)
@@ -327,14 +341,10 @@ it('lists ACP approvals through the command surface', function()
 end)
 
 it('does not auto-create a session for ACP approval completion or listing', function()
-    local definition = vim.api.nvim_get_commands({
-        builtin = false,
-    })['LegateRevealApproval']
     local notifications = {}
     local original_notify = vim.notify
 
-    assert.is_not_nil(definition)
-    assert.are.same({}, definition.complete('', 'LegateRevealApproval ', 0))
+    assert.are.same({}, complete_command('LegateRevealApproval', '', 'LegateRevealApproval '))
     assert.are.equal(0, #api.list_sessions())
 
     vim.notify = function(message)
@@ -480,14 +490,10 @@ it('completes bare approval option ids for a single pending request without nume
         },
     })
 
-    local definition = vim.api.nvim_get_commands({
-        builtin = false,
-    })['LegateSelectApprovalOption']
-
     assert.are.same({
         'allow-once',
         'reject-once',
-    }, definition.complete('', 'LegateSelectApprovalOption ', 0))
+    }, complete_command('LegateSelectApprovalOption', '', 'LegateSelectApprovalOption '))
 end)
 
 it('completes queued approval options for every pending request', function()
@@ -526,15 +532,12 @@ it('completes queued approval options for every pending request', function()
         },
     })
 
-    local definition = vim.api.nvim_get_commands({
-        builtin = false,
-    })['LegateSelectApprovalOption']
     local pending = api.pending_approvals()
 
     assert.are.same({
         string.format('%s:allow-first', pending[1].request_id),
         string.format('%s:allow-second', pending[2].request_id),
-    }, definition.complete('', 'LegateSelectApprovalOption ', 0))
+    }, complete_command('LegateSelectApprovalOption', '', 'LegateSelectApprovalOption '))
 end)
 
 it('resolves a pending inline approval through the command surface even when another session is selected', function()
@@ -698,13 +701,8 @@ it('completes ACP config option ids and values through the command surface', fun
         }
     end
 
-    local definition = vim.api.nvim_get_commands({
-        builtin = false,
-    })['LegateSetConfigOption']
-
-    assert.is_function(definition.complete)
-    assert.are.same({ 'mode', 'model' }, definition.complete('m', 'LegateSetConfigOption m', 0))
-    assert.are.same({ 'code' }, definition.complete('c', 'LegateSetConfigOption mode c', 0))
+    assert.are.same({ 'mode', 'model' }, complete_command('LegateSetConfigOption', 'm', 'LegateSetConfigOption m'))
+    assert.are.same({ 'code' }, complete_command('LegateSetConfigOption', 'c', 'LegateSetConfigOption mode c'))
 
     api.current_session = original_current_session
     api.config_options = original_config_options
@@ -1145,15 +1143,13 @@ it('completes ACP slash command names and input hints through the command surfac
     api.slash_commands()
     emit_available_commands_update()
 
-    local definition = vim.api.nvim_get_commands({
-        builtin = false,
-    })['LegateRunSlashCommand']
-
-    assert.is_function(definition.complete)
-    assert.are.same({ 'web' }, definition.complete('w', 'LegateRunSlashCommand w', 0))
-    assert.are.same({ 'query to search for' }, definition.complete('q', 'LegateRunSlashCommand web q', 0))
-    assert.are.same({}, definition.complete('', 'LegateRunSlashCommand test ', 0))
-    assert.are.same({ 'web' }, definition.complete('w', 'LegateRunSlashCommand foo w', 0))
+    assert.are.same({ 'web' }, complete_command('LegateRunSlashCommand', 'w', 'LegateRunSlashCommand w'))
+    assert.are.same(
+        { 'query to search for' },
+        complete_command('LegateRunSlashCommand', 'q', 'LegateRunSlashCommand web q')
+    )
+    assert.are.same({}, complete_command('LegateRunSlashCommand', '', 'LegateRunSlashCommand test '))
+    assert.are.same({ 'web' }, complete_command('LegateRunSlashCommand', 'w', 'LegateRunSlashCommand foo w'))
 end)
 
 it('runs an ACP slash command through the picker command surface', function()
