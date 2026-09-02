@@ -308,9 +308,8 @@ Restored state is intentionally local only: transcript, draft, tool rows, approv
   `nvim --headless -u tests/minimal_init.lua -l tests/live_load_failed_recovery_smoke.lua`
 - opt-in live terminal-selection probe:
   `nvim --headless -u tests/minimal_init.lua -l tests/live_terminal_selection_probe.lua`
-- formatting is enforced with Stylua
-- Lua modules should carry LuaLS annotations and doc comments
-- CI lives in `.github/workflows/ci.yml`
+- `scripts/ci/run.sh` runs the same Stylua and test gates used by the GitHub
+  Actions workflow in `.github/workflows/ci.yml`.
 
 The live restore and load-failed recovery smokes use real `codex-acp` with `auth_method = 'chatgpt'`, so they expect working local Codex auth before you run them.
 The live terminal-selection probe also uses real `codex-acp` with `auth_method = 'chatgpt'`; it enables `ministry.nvim` injection and guidance during the run, fails if no terminal or ACP tool-call path is observed, reports whether the agent actually used ACP `terminal/*`, whether it used `neovim/terminal/*`, which ACP tool-call kinds were observed instead, and whether any observed tool calls were `execute`, and accepts:
