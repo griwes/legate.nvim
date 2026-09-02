@@ -18,7 +18,7 @@ jobs:
         runs-on: ubuntu-26.04
         timeout-minutes: 10
         steps:
-            - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
             - name: Install Stylua
               run: cargo install stylua --version 2.5.2 --locked
             - name: Run lint checks
@@ -38,13 +38,13 @@ jobs:
             MINISTRY_NVIM_PATH: ${{ github.workspace }}/.dependencies/ministry.nvim
             TERMINALIA_NVIM_PATH: ${{ github.workspace }}/.dependencies/terminalia.nvim
         steps:
-            - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-            - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   repository: griwes/ministry.nvim
                   ref: main
                   path: .dependencies/ministry.nvim
-            - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   repository: griwes/terminalia.nvim
                   ref: main
